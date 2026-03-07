@@ -25,6 +25,7 @@ out/
 dist/
 coverage/
 *.tsbuildinfo
+next-env.d.ts
 
 # Logs
 *.log
@@ -38,4 +39,3 @@ pnpm-debug.log*
 Thumbs.db
 .idea/
 .vscode/
-

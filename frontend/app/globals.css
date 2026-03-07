@@ -8,3 +8,39 @@ body {
   padding: 0;
   font-family: sans-serif;
 }
+
+@layer base {
+  :root {
+    --background: 210 40% 98%;    /* #F8FAFC - Soft Slate */
+    --foreground: 222 47% 11%;    /* #111827 - Deep Navy */
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    /* --- Softplan 核心逻辑 --- */
+    --primary: 243 75% 62%;       /* #5850EC - Indigo Core */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+
+    /* 自动化辅助色 (Shadcn 的 Accent 通常用于 Hover，我们将其定义为 Cyan) */
+    --accent: 188 91% 43%;        /* #06B6D4 - Cyan Tech */
+    --accent-foreground: 0 0% 100%;
+
+    /* 人工介入色 (借用 Destructive 或自定义) */
+    --warning: 38 92% 50%;        /* #F59E0B - Intervention Amber */
+    --warning-foreground: 0 0% 100%;
+
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 243 75% 62%;          /* 聚焦环使用主色 */
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222 47% 11%;
+    --foreground: 210 40% 98%;
+    /* ... 对应的暗黑模式变量 ... */
+  }
+}
