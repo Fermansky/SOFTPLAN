@@ -6,41 +6,227 @@ html,
 body {
   margin: 0;
   padding: 0;
-  font-family: sans-serif;
+  min-height: 100%;
+  color: hsl(var(--foreground));
+  background: hsl(var(--background));
+  font-family: var(--font-ui), "Segoe UI", sans-serif;
 }
 
-@layer base {
-  :root {
-    --background: 210 40% 98%;    /* #F8FAFC - Soft Slate */
-    --foreground: 222 47% 11%;    /* #111827 - Deep Navy */
+:root {
+  --background: 210 40% 98%;
+  --foreground: 222 47% 11%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+  --primary: 243 75% 62%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 188 91% 43%;
+  --accent-foreground: 0 0% 100%;
+  --border: 214 32% 91%;
+  --shadow: 222 20% 10%;
+}
 
-    --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  inset: auto;
+  z-index: -1;
+  pointer-events: none;
+}
 
-    /* --- Softplan 核心逻辑 --- */
-    --primary: 243 75% 62%;       /* #5850EC - Indigo Core */
-    --primary-foreground: 0 0% 100%;
+body::before {
+  top: -220px;
+  right: -180px;
+  width: 560px;
+  height: 560px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    hsla(var(--primary), 0.25) 0%,
+    hsla(var(--primary), 0) 72%
+  );
+}
 
-    --secondary: 210 40% 96%;
-    --secondary-foreground: 222 47% 11%;
+body::after {
+  left: -160px;
+  bottom: -220px;
+  width: 520px;
+  height: 520px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    hsla(var(--accent), 0.18) 0%,
+    hsla(var(--accent), 0) 72%
+  );
+}
 
-    /* 自动化辅助色 (Shadcn 的 Accent 通常用于 Hover，我们将其定义为 Cyan) */
-    --accent: 188 91% 43%;        /* #06B6D4 - Cyan Tech */
-    --accent-foreground: 0 0% 100%;
+.welcome-page {
+  width: min(1120px, 100% - 2.5rem);
+  margin: 0 auto;
+  padding: 4rem 0 3rem;
+  display: grid;
+  gap: 1.5rem;
+}
 
-    /* 人工介入色 (借用 Destructive 或自定义) */
-    --warning: 38 92% 50%;        /* #F59E0B - Intervention Amber */
-    --warning-foreground: 0 0% 100%;
+.hero {
+  background: linear-gradient(
+    135deg,
+    hsl(var(--card)) 0%,
+    hsl(210 40% 99%) 45%,
+    hsl(210 40% 97%) 100%
+  );
+  border: 1px solid hsl(var(--border));
+  border-radius: 20px;
+  padding: clamp(1.5rem, 3vw, 3rem);
+  box-shadow: 0 22px 50px -30px hsla(var(--shadow), 0.35);
+  animation: fade-up 540ms ease both;
+}
 
-    --border: 214 32% 91%;
-    --input: 214 32% 91%;
-    --ring: 243 75% 62%;          /* 聚焦环使用主色 */
-    --radius: 0.5rem;
+.badge {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: hsl(var(--primary));
+  background: hsla(var(--primary), 0.12);
+  border-radius: 999px;
+}
+
+.hero h1 {
+  margin: 0.9rem 0 0;
+  max-width: 22ch;
+  font-size: clamp(2rem, 4vw, 3.4rem);
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+}
+
+.hero-subtitle {
+  margin: 1rem 0 0;
+  max-width: 62ch;
+  color: hsl(222 20% 28%);
+  font-size: clamp(1rem, 1.4vw, 1.1rem);
+  line-height: 1.7;
+}
+
+.hero-actions {
+  margin-top: 1.4rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+}
+
+.btn {
+  border: 0;
+  border-radius: 10px;
+  padding: 0.72rem 1.15rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+}
+
+.btn-primary {
+  color: hsl(var(--primary-foreground));
+  background: linear-gradient(
+    120deg,
+    hsl(var(--primary)) 0%,
+    hsl(235 80% 66%) 100%
+  );
+  box-shadow: 0 12px 30px -16px hsla(var(--primary), 0.8);
+}
+
+.btn-secondary {
+  color: hsl(var(--foreground));
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+}
+
+.feature-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.feature-card {
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  border-radius: 16px;
+  padding: 1.1rem 1rem 1.2rem;
+  box-shadow: 0 12px 30px -25px hsla(var(--shadow), 0.28);
+  animation: fade-up 620ms ease both;
+}
+
+.feature-card h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  letter-spacing: -0.01em;
+}
+
+.feature-card p {
+  margin: 0.5rem 0 0;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: hsl(222 20% 33%);
+}
+
+.kpi-strip {
+  border: 1px solid hsl(var(--border));
+  border-radius: 14px;
+  background: hsl(var(--card));
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.8rem;
+  padding: 0.9rem 1rem;
+  animation: fade-up 720ms ease both;
+}
+
+.kpi-label {
+  margin: 0;
+  color: hsl(222 12% 44%);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.kpi-value {
+  margin: 0.3rem 0 0;
+  font-family: var(--font-mono), "Consolas", monospace;
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 900px) {
+  .feature-grid,
+  .kpi-strip {
+    grid-template-columns: 1fr;
   }
 
-  .dark {
-    --background: 222 47% 11%;
-    --foreground: 210 40% 98%;
-    /* ... 对应的暗黑模式变量 ... */
+  .welcome-page {
+    width: min(1120px, 100% - 1.4rem);
+    padding-top: 1.4rem;
+  }
+
+  .hero-actions .btn {
+    width: 100%;
   }
 }
