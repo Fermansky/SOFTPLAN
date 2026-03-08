@@ -77,14 +77,14 @@ export function CreateProjectDialog({ onCreateProject }: CreateProjectDialogProp
       <DialogTrigger asChild>
         <Button onClick={resetForm}>+ 新建项目</Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-sm">
-        <form onSubmit={handleSubmit}>
+      <DialogContent>
+        <form onSubmit={handleSubmit} className="grid gap-4">
           <DialogHeader>
             <DialogTitle>新建项目</DialogTitle>
             <DialogDescription>填写项目名称和描述后，提交到后端创建项目。</DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-2">
+          <div className="grid gap-2">
             <label htmlFor="project-name" className="text-sm font-medium">
               项目名称
             </label>
@@ -99,7 +99,7 @@ export function CreateProjectDialog({ onCreateProject }: CreateProjectDialogProp
             />
           </div>
 
-          <div className="space-y-2">
+          <div className="grid gap-2">
             <label htmlFor="project-description" className="text-sm font-medium">
               项目描述
             </label>
