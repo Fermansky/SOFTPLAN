@@ -1,92 +1,98 @@
-"use client";
+"use client"
 
-import { useEffect, useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { useEffect, useMemo, useState } from "react"
+import { Search } from "lucide-react"
 
-import { Badge } from "../components/ui/badge";
-import { Button } from "../components/ui/button";
-import { Card, CardContent } from "../components/ui/card";
-import { Input } from "../components/ui/input";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { CreateProjectDialog } from "@/components/create-project-dialog"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 
-type ProjectStatus = "parsing" | "analyzing" | "pending_confirm" | "done";
+type ApiProjectStatus = "draft" | "analyzing" | "completed" | "archived"
+type ProjectStatus = ApiProjectStatus | "parsing" | "pending_confirm" | "done"
+
+type ApiProject = {
+  id: string
+  name: string
+  description: string
+  status: ApiProjectStatus
+  current_version_id: string | null
+  created_at: string
+  updated_at: string
+}
 
 type ProjectItem = {
-  id: string;
-  name: string;
-  description: string;
-  status: ProjectStatus;
-  version: string;
-  fp: number | null;
-  estimatedCost: number | null;
-  lastUpdated: string;
-  reportGeneratedAt?: string | null;
-};
+  id: string
+  name: string
+  description: string
+  status: ProjectStatus
+  version: string
+  fp: number | null
+  estimatedCost: number | null
+  lastUpdated: string
+  reportGeneratedAt?: string | null
+}
 
 const MOCK_PROJECTS: ProjectItem[] = [
   {
     id: "p-1001",
-    name: "智慧教务平台升级",
-    description: "教务排课与教师工作量核算模块整合",
+    name: "智慧校园排课系统",
+    description: "课程排课与教师工作量核算模块整合",
     status: "pending_confirm",
     version: "V1.2",
     fp: 126,
     estimatedCost: 286000,
     lastUpdated: "2026-03-06T10:30:00+08:00",
-    reportGeneratedAt: "2026-03-05T17:10:00+08:00"
+    reportGeneratedAt: "2026-03-05T17:10:00+08:00",
   },
   {
     id: "p-1002",
-    name: "科研数据采集中台",
-    description: "多源数据接入、清洗、统一检索",
+    name: "科研数据中台",
+    description: "多源数据接入、清洗与统一检索",
     status: "analyzing",
     version: "V0.9",
     fp: 214,
     estimatedCost: null,
     lastUpdated: "2026-03-07T09:20:00+08:00",
-    reportGeneratedAt: null
+    reportGeneratedAt: null,
   },
   {
     id: "p-1003",
     name: "实验室资产追踪系统",
-    description: "资产流转、报修、可追溯审计",
+    description: "资产流转、报修流程与审计追溯",
     status: "done",
     version: "V2.0",
     fp: 98,
     estimatedCost: 168000,
     lastUpdated: "2026-03-04T15:00:00+08:00",
-    reportGeneratedAt: "2026-03-04T15:00:00+08:00"
+    reportGeneratedAt: "2026-03-04T15:00:00+08:00",
   },
-  {
-    id: "p-1004",
-    name: "招生咨询智能问答",
-    description: "招生政策知识库与多轮问答支持",
-    status: "parsing",
-    version: "V0.3",
-    fp: null,
-    estimatedCost: null,
-    lastUpdated: "2026-03-07T11:05:00+08:00",
-    reportGeneratedAt: null
-  }
-];
+]
 
 function getStatusMeta(status: ProjectStatus) {
   const map: Record<ProjectStatus, { label: string; className: string }> = {
+    draft: { label: "草稿", className: "bg-slate-100 text-slate-800 hover:bg-slate-100" },
     parsing: { label: "解析中", className: "bg-amber-100 text-amber-800 hover:bg-amber-100" },
     analyzing: { label: "分析中", className: "bg-sky-100 text-sky-800 hover:bg-sky-100" },
     pending_confirm: { label: "待确认", className: "bg-orange-100 text-orange-800 hover:bg-orange-100" },
-    done: { label: "已完成", className: "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" }
-  };
-  return map[status];
+    completed: { label: "已完成", className: "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" },
+    archived: { label: "已归档", className: "bg-zinc-100 text-zinc-800 hover:bg-zinc-100" },
+    done: { label: "已完成", className: "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" },
+  }
+
+  return map[status]
 }
 
 function formatCost(value: number | null) {
-  if (value === null) return "--";
+  if (value === null) return "--"
+
   return new Intl.NumberFormat("zh-CN", {
     style: "currency",
     currency: "CNY",
-    maximumFractionDigits: 0
-  }).format(value);
+    maximumFractionDigits: 0,
+  }).format(value)
 }
 
 function formatDate(value: string) {
@@ -96,61 +102,95 @@ function formatDate(value: string) {
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false
-  });
+    hour12: false,
+  })
+}
+
+function mapApiProjectToItem(project: ApiProject): ProjectItem {
+  return {
+    id: project.id,
+    name: project.name,
+    description: project.description || "--",
+    status: project.status,
+    version: project.current_version_id ? project.current_version_id.slice(0, 8) : "--",
+    fp: null,
+    estimatedCost: null,
+    lastUpdated: project.updated_at,
+    reportGeneratedAt: null,
+  }
 }
 
 async function fetchProjectsFromBackend(signal: AbortSignal): Promise<ProjectItem[]> {
-  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
   const res = await fetch(`${apiBase}/projects`, {
     method: "GET",
     signal,
-    headers: { Accept: "application/json" }
-  });
+    headers: { Accept: "application/json" },
+  })
 
   if (!res.ok) {
-    throw new Error(`Fetch projects failed: ${res.status}`);
+    throw new Error(`获取项目列表失败：${res.status}`)
   }
 
-  const data = (await res.json()) as ProjectItem[];
-  return Array.isArray(data) ? data : [];
+  const data = (await res.json()) as ApiProject[]
+  return Array.isArray(data) ? data.map(mapApiProjectToItem) : []
+}
+
+async function createProjectOnBackend(payload: { name: string; description: string }): Promise<ProjectItem> {
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
+  const res = await fetch(`${apiBase}/projects`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(payload),
+  })
+
+  if (!res.ok) {
+    throw new Error(`创建项目失败：${res.status}`)
+  }
+
+  const data = (await res.json()) as ApiProject
+  return mapApiProjectToItem(data)
 }
 
 export default function HomePage() {
-  const [projects, setProjects] = useState<ProjectItem[]>([]);
-  const [query, setQuery] = useState("");
-  const [usingMockData, setUsingMockData] = useState(false);
+  const [projects, setProjects] = useState<ProjectItem[]>([])
+  const [query, setQuery] = useState("")
+  const [usingMockData, setUsingMockData] = useState(false)
 
   useEffect(() => {
-    const controller = new AbortController();
+    const controller = new AbortController()
 
     fetchProjectsFromBackend(controller.signal)
       .then((items) => {
-        setProjects(items.length > 0 ? items : MOCK_PROJECTS);
-        setUsingMockData(items.length === 0);
+        setProjects(items)
+        setUsingMockData(false)
       })
       .catch(() => {
-        setProjects(MOCK_PROJECTS);
-        setUsingMockData(true);
-      });
+        setProjects(MOCK_PROJECTS)
+        setUsingMockData(true)
+      })
 
-    return () => controller.abort();
-  }, []);
+    return () => controller.abort()
+  }, [])
 
   const filteredProjects = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
-    if (!keyword) return projects;
+    const keyword = query.trim().toLowerCase()
+    if (!keyword) return projects
+
     return projects.filter(
       (item) => item.name.toLowerCase().includes(keyword) || item.description.toLowerCase().includes(keyword)
-    );
-  }, [projects, query]);
+    )
+  }, [projects, query])
 
   const stats = useMemo(() => {
-    const total = filteredProjects.length;
-    const pending = filteredProjects.filter((item) => item.status === "pending_confirm").length;
-    const reports = filteredProjects.filter((item) => item.reportGeneratedAt).length;
-    return { total, pending, reports };
-  }, [filteredProjects]);
+    const total = filteredProjects.length
+    const pending = filteredProjects.filter((item) => item.status === "pending_confirm").length
+    const reports = filteredProjects.filter((item) => item.reportGeneratedAt).length
+    return { total, pending, reports }
+  }, [filteredProjects])
 
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
@@ -163,38 +203,44 @@ export default function HomePage() {
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="搜索项目名称或描述"
+              placeholder="按项目名称或描述搜索"
               className="pl-9"
               aria-label="全局搜索"
             />
           </div>
-          <Button>+ 新建估算项目</Button>
+          <CreateProjectDialog
+            onCreateProject={async ({ name, description }) => {
+              const created = await createProjectOnBackend({ name, description })
+              setProjects((prev) => [created, ...prev])
+              setUsingMockData(false)
+            }}
+          />
         </div>
       </div>
 
       <div className="mt-5 space-y-4">
         {usingMockData ? (
           <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-            当前未连接后端，已展示本地示例数据。
+            后端暂不可用，当前展示本地示例数据。
           </div>
         ) : null}
 
         <section className="grid grid-cols-1 gap-4 md:grid-cols-3" aria-label="项目概览">
           <Card>
             <CardContent className="p-5">
-              <p className="text-sm text-slate-500">总项目数</p>
+              <p className="text-sm text-slate-500">项目总数</p>
               <p className="mt-1 text-3xl font-semibold">{stats.total}</p>
             </CardContent>
           </Card>
           <Card>
             <CardContent className="p-5">
-              <p className="text-sm text-slate-500">待确认项</p>
+              <p className="text-sm text-slate-500">待确认项目</p>
               <p className="mt-1 text-3xl font-semibold">{stats.pending}</p>
             </CardContent>
           </Card>
           <Card>
             <CardContent className="p-5">
-              <p className="text-sm text-slate-500">最近生成的报告数</p>
+              <p className="text-sm text-slate-500">已生成报告</p>
               <p className="mt-1 text-3xl font-semibold">{stats.reports}</p>
             </CardContent>
           </Card>
@@ -205,7 +251,7 @@ export default function HomePage() {
             <TableHeader>
               <TableRow className="hover:bg-transparent">
                 <TableHead>项目名称</TableHead>
-                <TableHead>分析状态</TableHead>
+                <TableHead>状态</TableHead>
                 <TableHead>当前版本</TableHead>
                 <TableHead>规模 (FP)</TableHead>
                 <TableHead>预估成本</TableHead>
@@ -215,7 +261,8 @@ export default function HomePage() {
             </TableHeader>
             <TableBody>
               {filteredProjects.map((item) => {
-                const status = getStatusMeta(item.status);
+                const status = getStatusMeta(item.status)
+
                 return (
                   <TableRow key={item.id}>
                     <TableCell>
@@ -239,7 +286,7 @@ export default function HomePage() {
                           查看报告
                         </Button>
                         <Button size="sm" variant="secondary">
-                          进入分析
+                          开始分析
                         </Button>
                         <Button size="sm" variant="destructive">
                           删除
@@ -247,12 +294,12 @@ export default function HomePage() {
                       </div>
                     </TableCell>
                   </TableRow>
-                );
+                )
               })}
               {filteredProjects.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center text-slate-500">
-                    未找到匹配项目
+                    未找到匹配的项目
                   </TableCell>
                 </TableRow>
               ) : null}
@@ -261,6 +308,5 @@ export default function HomePage() {
         </Card>
       </div>
     </div>
-  );
+  )
 }
-

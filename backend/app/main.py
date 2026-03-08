@@ -11,7 +11,7 @@ from .models import Project, ProjectCreate, ProjectRead, ProjectUpdate
 
 app = FastAPI(title="Softplan API", version="0.1.0")
 
-allowed_origins = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:3000")
+allowed_origins = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:3000,http://localhost:3001")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in allowed_origins.split(",") if origin.strip()],
