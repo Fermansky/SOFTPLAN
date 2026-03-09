@@ -1,9 +1,21 @@
-"use client"
+﻿"use client"
 
 import { useEffect, useMemo, useState } from "react"
+import Link from "next/link"
 import { Search } from "lucide-react"
 
 import { CreateProjectDialog } from "@/components/create-project-dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -33,6 +45,12 @@ type ProjectItem = {
   estimatedCost: number | null
   lastUpdated: string
   reportGeneratedAt?: string | null
+}
+
+type DeleteAlert = {
+  variant: "default" | "destructive"
+  title: string
+  description: string
 }
 
 const MOCK_PROJECTS: ProjectItem[] = [
@@ -129,7 +147,7 @@ async function fetchProjectsFromBackend(signal: AbortSignal): Promise<ProjectIte
   })
 
   if (!res.ok) {
-    throw new Error(`获取项目列表失败：${res.status}`)
+    throw new Error(`鑾峰彇椤圭洰鍒楄〃澶辫触锛?{res.status}`)
   }
 
   const data = (await res.json()) as ApiProject[]
@@ -148,17 +166,32 @@ async function createProjectOnBackend(payload: { name: string; description: stri
   })
 
   if (!res.ok) {
-    throw new Error(`创建项目失败：${res.status}`)
+    throw new Error(`鍒涘缓椤圭洰澶辫触锛?{res.status}`)
   }
 
   const data = (await res.json()) as ApiProject
   return mapApiProjectToItem(data)
 }
 
+async function deleteProjectOnBackend(projectId: string): Promise<void> {
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
+  const res = await fetch(`${apiBase}/projects/${projectId}`, {
+    method: "DELETE",
+  })
+
+  if (!res.ok) {
+    throw new Error(`鍒犻櫎椤圭洰澶辫触锛?{res.status}`)
+  }
+}
+
 export default function HomePage() {
   const [projects, setProjects] = useState<ProjectItem[]>([])
   const [query, setQuery] = useState("")
   const [usingMockData, setUsingMockData] = useState(false)
+  const [projectToDelete, setProjectToDelete] = useState<ProjectItem | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState("")
+  const [deleteAlert, setDeleteAlert] = useState<DeleteAlert | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -192,8 +225,64 @@ export default function HomePage() {
     return { total, pending, reports }
   }, [filteredProjects])
 
+  useEffect(() => {
+    if (!deleteAlert) return
+
+    const timer = window.setTimeout(() => {
+      setDeleteAlert(null)
+    }, 3000)
+
+    return () => window.clearTimeout(timer)
+  }, [deleteAlert])
+
+  async function handleConfirmDelete() {
+    const targetProject = projectToDelete
+    if (!targetProject) return
+
+    setIsDeleting(true)
+    setDeleteError("")
+
+    try {
+      if (!usingMockData) {
+        await deleteProjectOnBackend(targetProject.id)
+      }
+
+      setProjects((prev) => prev.filter((item) => item.id !== targetProject.id))
+      setProjectToDelete(null)
+      setDeleteAlert({
+        variant: "default",
+        title: "删除成功",
+        description: `项目「${targetProject.name}」已删除。`,
+      })
+    } catch (deleteProjectError) {
+      const errorMessage = deleteProjectError instanceof Error ? deleteProjectError.message : "删除项目失败。"
+      setDeleteError(errorMessage)
+      setDeleteAlert({
+        variant: "destructive",
+        title: "删除失败",
+        description: errorMessage,
+      })
+    } finally {
+      setIsDeleting(false)
+    }
+  }
+
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+      {deleteAlert ? (
+        <div className="fixed right-6 top-6 z-[60] w-[min(92vw,420px)]">
+          <Alert variant={deleteAlert.variant} className="shadow-lg">
+            <AlertTitle>{deleteAlert.title}</AlertTitle>
+            <AlertDescription>{deleteAlert.description}</AlertDescription>
+            <AlertAction>
+              <Button size="xs" variant="ghost" onClick={() => setDeleteAlert(null)}>
+                关闭
+              </Button>
+            </AlertAction>
+          </Alert>
+        </div>
+      ) : null}
+
       <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm backdrop-blur sm:p-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <div className="text-sm font-extrabold tracking-[0.1em] text-slate-700">SOFTPLAN</div>
@@ -267,9 +356,9 @@ export default function HomePage() {
                   <TableRow key={item.id}>
                     <TableCell>
                       <div className="space-y-1">
-                        <a href="#" className="font-semibold text-slate-900 hover:underline">
+                        <Link href={`/projects/${item.id}`} className="font-semibold text-slate-900 hover:underline">
                           {item.name}
-                        </a>
+                        </Link>
                         <p className="text-xs text-slate-500">{item.description}</p>
                       </div>
                     </TableCell>
@@ -288,7 +377,14 @@ export default function HomePage() {
                         <Button size="sm" variant="secondary">
                           开始分析
                         </Button>
-                        <Button size="sm" variant="destructive">
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => {
+                            setDeleteError("")
+                            setProjectToDelete(item)
+                          }}
+                        >
                           删除
                         </Button>
                       </div>
@@ -307,6 +403,40 @@ export default function HomePage() {
           </Table>
         </Card>
       </div>
+
+      <AlertDialog
+        open={Boolean(projectToDelete)}
+        onOpenChange={(open) => {
+          if (!open && !isDeleting) {
+            setProjectToDelete(null)
+            setDeleteError("")
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>确认删除项目</AlertDialogTitle>
+            <AlertDialogDescription>
+              {projectToDelete ? `确定要删除「${projectToDelete.name}」吗？该操作不可恢复。` : "确定要删除该项目吗？"}
+            </AlertDialogDescription>
+            {deleteError ? <AlertDialogDescription className="text-destructive">{deleteError}</AlertDialogDescription> : null}
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={isDeleting}
+              onClick={(event) => {
+                event.preventDefault()
+                void handleConfirmDelete()
+              }}
+            >
+              {isDeleting ? "删除中..." : "确认删除"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
+
