@@ -36,113 +36,53 @@ erDiagram
 | updated_at         | Timestamp | 更新时间        |                                       |
 | deleted_at         | Timestamp | 逻辑删除时间    | `NULL` 表示未删除，非空表示已删除         |
 
-### 2.2 文档表 (documents)
+### 2.2 软件主表 (softwares)
 
-存储原始文档信息及其解析后的结构化文本。
+存储软件资产的身份信息，作为跨项目引用软件的唯一基准。
 
-| **字段名**     | **类型**  | **描述**       | **说明**                           |
-| -------------- | --------- | -------------- | ---------------------------------- |
-| id             | UUID      | 主键           |                                    |
-| project_id     | UUID      | 外键           | 关联项目                           |
-| file_name      | String    | 文件名         |                                    |
-| file_path      | String    | 存储路径       | 云存储或本地路径                   |
-| file_type      | String    | 扩展名         | 如 pdf, docx                       |
-| raw_content    | LongText  | 解析后的纯文本 | 转换后的全量结构化文本             |
-| structure_json | JSON      | 章节结构信息   | 存储标题、段落等元数据             |
-| status         | Enum      | 解析状态       | pending, processing, success, fail |
-| created_at     | Timestamp | 上传时间       |                                    |
+| **字段名**      | **类型**    | **描述** | **说明**                               |
+| --------------- | ----------- | -------- | -------------------------------------- |
+| **id**          | UUID        | 主键     | 默认使用 `gen_random_uuid()`           |
+| **code**        | TEXT        | 软件编号 | 唯一索引，用于跨项目识别（如：SW-001） |
+| **name**        | TEXT        | 软件名称 | 软件的通用展示名称                     |
+| **description** | TEXT        | 软件描述 | 记录软件的功能定位或背景信息           |
+| **created_at**  | TIMESTAMPTZ | 创建时间 | 软件资产首次录入系统的时间             |
+| **updated_at**  | TIMESTAMPTZ | 更新时间     | 最后一次信息修改时间           |
+| **deleted_at**  | TIMESTAMPTZ | 逻辑删除时间 | 非空表示该软件资产已下线/废弃  |
 
-### 2.3 分析版本表 (analysis_versions)
+------
 
-每次重算或关键修正生成的快照。
+### 2.3 项目软件关联表 (project_software_relation)
 
-| **字段名**        | **类型**  | **描述**  | **说明**                       |
-| ----------------- | --------- | --------- | ------------------------------ |
-| id                | UUID      | 主键      |                                |
-| project_id        | UUID      | 外键      |                                |
-| doc_id            | UUID      | 外键      | 本次分析基于的文档版本         |
-| version_num       | Integer   | 版本序号  | 如 1, 2, 3...                  |
-| tag               | String    | 备注/标签 | 用户填写的版本说明             |
-| parent_version_id | UUID      | 父版本 ID | 用于追踪是从哪个版本修改而来的 |
-| created_at        | Timestamp | 创建时间  |                                |
+管理项目与软件的多对多关系，记录特定项目背景下的软件版本状态。
 
-### 2.4 需求项表 (requirement_items)
+| **字段名**      | **类型**    | **描述**      | **说明**                                   |
+| --------------- | ----------- | ------------- | ------------------------------------------ |
+| **project_id**  | UUID        | 复合主键/外键 | 关联 `projects.id`，级联删除               |
+| **software_id** | UUID        | 复合主键/外键 | 关联 `softwares.id`，级联删除              |
+| **version**     | TEXT        | 项目内版本号  | 记录本项目涉及的具体软件版本（如：v2.1.0） |
+| **created_at**  | TIMESTAMPTZ | 关联时间      | 软件被分配到项目的时间                     |
 
-LLM 自动提取的需求/功能模块清单。
+------
 
-| **字段名**    | **类型** | **描述**  | **说明**               |
-| ------------- | -------- | --------- | ---------------------- |
-| id            | UUID     | 主键      |                        |
-| version_id    | UUID     | 外键      | 关联版本               |
-| module_name   | String   | 所属模块  |                        |
-| title         | String   | 需求标题  |                        |
-| description   | Text     | 需求详述  |                        |
-| source_ref    | String   | 文档依据  | 文档中的页码或段落索引 |
-| ai_confidence | Float    | AI 置信度 | 0-1 之间               |
+### 2.4 文档表 (documents)
 
-### 2.5 功能点分析表 (function_points)
+存储文档元数据及 MinIO 存储映射，支持直属于项目或关联具体软件。
 
-IFPUG 功能点分析核心表。
-
-| **字段名**    | **类型** | **描述**       | **说明**               |
-| ------------- | -------- | -------------- | ---------------------- |
-| id            | UUID     | 主键           |                        |
-| version_id    | UUID     | 外键           |                        |
-| req_item_id   | UUID     | 外键           | 关联需求项             |
-| fp_name       | String   | 功能点名称     |                        |
-| fp_type       | Enum     | 功能类型       | EI, EO, EQ, ILF, EIF   |
-| complexity    | Enum     | 复杂度         | Low, Average, High     |
-| det_count     | Integer  | DET 数量       | 字段个数               |
-| ret_ftr_count | Integer  | RET/FTR 数量   | 逻辑文件或引用文件个数 |
-| unadjusted_fp | Float    | 未调整功能点数 | 计算得出的点数         |
-| logic_desc    | Text     | 计算逻辑说明   | AI 生成的判定理由      |
-| is_modified   | Boolean  | 是否被人工修改 |                        |
-| user_notes    | Text     | 人工备注       | 修改理由               |
-
-### 2.6 估算结果表 (estimation_results)
-
-存储最终的工作量和成本结论。
-
-| **字段名**           | **类型** | **描述**       | **说明**                        |
-| -------------------- | -------- | -------------- | ------------------------------- |
-| id                   | UUID     | 主键           |                                 |
-| version_id           | UUID     | 外键           |                                 |
-| total_fp             | Float    | 总功能点数     |                                 |
-| effort_person_months | Float    | 工作量(人月)   |                                 |
-| total_cost           | Decimal  | 总成本(元)     |                                 |
-| model_name           | String   | 使用的成本模型 | 如 "Simple-Linear", "COCOMO-II" |
-| model_params         | JSON     | 模型参数快照   | 记录当时的费率、因子等          |
-| result_json          | JSON     | 详细结果报表   | 结构化的导出数据                |
-
-### 2.7 LLM 推理记录表 (llm_traces)
-
-存储“高可解释性”所需的推理过程。
-
-| **字段名**  | **类型** | **描述**       | **说明**                          |
-| ----------- | -------- | -------------- | --------------------------------- |
-| id          | UUID     | 主键           |                                   |
-| version_id  | UUID     | 外键           |                                   |
-| stage       | String   | 阶段           | parsing, requirement, ifpug, cost |
-| prompt      | Text     | 输入提示词     |                                   |
-| response    | Text     | AI 输出原文    |                                   |
-| model_id    | String   | 使用的模型版本 | 如 gpt-4o, gemini-1.5-pro         |
-| token_usage | Integer  | Token 消耗     |                                   |
-
-### 2.8 修改日志表 (modification_logs)
-
-记录人工对分析结果的干预轨迹。
-
-| **字段名**   | **类型**  | **描述**    | **说明**           |
-| ------------ | --------- | ----------- | ------------------ |
-| id           | UUID      | 主键        |                    |
-| version_id   | UUID      | 外键        |                    |
-| target_table | String    | 目标表名    | 如 function_points |
-| target_id    | UUID      | 目标数据 ID |                    |
-| field_name   | String    | 修改字段    |                    |
-| old_value    | Text      | 修改前值    |                    |
-| new_value    | Text      | 修改后值    |                    |
-| reason       | Text      | 修改原因    |                    |
-| created_at   | Timestamp | 修改时间    |                    |
+| **字段名**         | **类型**    | **描述**     | **说明**                                                |
+| ------------------ | ----------- | ------------ | ------------------------------------------------------- |
+| **id**             | UUID        | 主键         | 默认使用 `gen_random_uuid()`                            |
+| **project_id**     | UUID        | 业务外键     | **必填**，关联所属项目                                  |
+| **software_id**    | UUID        | 业务外键     | **可选**，关联具体软件。若为 NULL 则直属项目            |
+| **name**           | TEXT        | 文档名称     | 文件的展示名称（含扩展名）                              |
+| **storage_bucket** | TEXT        | 存储桶名     | MinIO 中的 Bucket（默认：`project-docs`）               |
+| **storage_key**    | TEXT        | 存储路径     | MinIO 中的对象 Key（建议：`项目ID/软件ID/UUID_文件名`） |
+| **file_size**      | BIGINT      | 文件大小     | 单位：Bytes。使用 BIGINT 以支持大文件                   |
+| **content_type**   | TEXT        | MIME 类型    | 如 `application/pdf`, `image/png`                       |
+| **extra_info**     | JSONB       | 扩展元数据   | 存储解析后的章节结构、ETag、搜索关键词等                |
+| **created_at**     | TIMESTAMPTZ | 创建时间     | 数据库记录创建时间                                      |
+| **updated_at**     | TIMESTAMPTZ | 更新时间     | 文档元数据或内容最后修改时间                            |
+| **deleted_at**     | TIMESTAMPTZ | 逻辑删除时间 | 用于逻辑删除，非空表示该文档已废弃                      |
 
 ## 3. 设计要点说明
 

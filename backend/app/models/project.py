@@ -1,8 +1,10 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 from uuid import UUID, uuid4
 
 from sqlmodel import Field, SQLModel
+
+from .common import utc_now
 
 
 class ProjectStatus(str, Enum):
@@ -10,10 +12,6 @@ class ProjectStatus(str, Enum):
     analyzing = "analyzing"
     completed = "completed"
     archived = "archived"
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 class ProjectBase(SQLModel):
@@ -47,3 +45,4 @@ class ProjectRead(ProjectBase):
     id: UUID
     created_at: datetime
     updated_at: datetime
+
