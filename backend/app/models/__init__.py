@@ -1,4 +1,5 @@
 from .document import Document, DocumentCreate, DocumentRead, DocumentUpdate
+from .file_record import FileRecord, FileRecordCreate, FileRecordRead
 from .project import Project, ProjectCreate, ProjectRead, ProjectStatus, ProjectUpdate
 from .project_software_relation import (
     ProjectSoftwareRelation,
@@ -13,6 +14,9 @@ __all__ = [
     "DocumentCreate",
     "DocumentRead",
     "DocumentUpdate",
+    "FileRecord",
+    "FileRecordCreate",
+    "FileRecordRead",
     "Project",
     "ProjectCreate",
     "ProjectRead",

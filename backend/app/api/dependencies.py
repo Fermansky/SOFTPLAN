@@ -3,7 +3,8 @@ from uuid import UUID
 from fastapi import HTTPException, status
 from sqlmodel import Session, select
 
-from ..models import Document, Project, ProjectSoftwareRelation, Software
+from ..models import Document, FileRecord, Project, ProjectSoftwareRelation, Software
+from ..services import MinioStorage, get_minio_storage as get_minio_storage_service
 
 
 def get_active_project_or_404(project_id: UUID, session: Session) -> Project:
@@ -30,6 +31,14 @@ def get_active_document_or_404(document_id: UUID, session: Session) -> Document:
     return document
 
 
+def get_file_or_404(file_id: UUID, session: Session) -> FileRecord:
+    statement = select(FileRecord).where(FileRecord.id == file_id)
+    file_record = session.exec(statement).first()
+    if file_record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    return file_record
+
+
 def get_project_software_relation_or_404(
     project_id: UUID, software_id: UUID, session: Session
 ) -> ProjectSoftwareRelation:
@@ -44,3 +53,7 @@ def get_project_software_relation_or_404(
             detail="Project software relation not found",
         )
     return relation
+
+
+def get_minio_storage() -> MinioStorage:
+    return get_minio_storage_service()
