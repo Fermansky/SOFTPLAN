@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
@@ -48,6 +49,22 @@ def _parse_extra_info(extra_info: str | None) -> dict[str, Any] | None:
 def _find_file_by_hash(file_hash: str, session: Session) -> FileRecord | None:
     statement = select(FileRecord).where(FileRecord.file_hash == file_hash)
     return session.exec(statement).first()
+
+
+def _build_download_filename(name: str, extension: str) -> str:
+    filename = name.strip() or "document"
+    normalized_extension = extension.strip()
+    if normalized_extension and not normalized_extension.startswith("."):
+        normalized_extension = f".{normalized_extension}"
+    if normalized_extension and not filename.lower().endswith(normalized_extension.lower()):
+        filename = f"{filename}{normalized_extension}"
+    return filename
+
+
+def _build_content_disposition(filename: str) -> str:
+    ascii_filename = filename.encode("ascii", "ignore").decode("ascii").strip() or "document"
+    encoded_filename = quote(filename, safe="")
+    return f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{encoded_filename}"
 
 
 def _cleanup_uploaded_object(storage: MinioStorage, storage_key: str) -> None:
@@ -257,6 +274,50 @@ def list_documents(
 def get_document(document_id: UUID, session: Session = Depends(get_session)) -> Document:
     logger.info("Fetching document detail, document_id=%s", document_id)
     return get_active_document_or_404(document_id, session)
+
+
+@router.get("/{document_id}/download")
+def download_document(
+    document_id: UUID,
+    session: Session = Depends(get_session),
+    storage: MinioStorage = Depends(get_minio_storage),
+) -> Response:
+    logger.info("Downloading document file, document_id=%s", document_id)
+    document = get_active_document_or_404(document_id, session)
+    if document.file_id is None:
+        logger.warning("Document has no file_id, document_id=%s", document_id)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document file not found")
+
+    file_record = get_file_or_404(document.file_id, session)
+    try:
+        payload = storage.download_bytes(file_record.storage_key)
+    except S3Error as exc:
+        if exc.code in {"NoSuchKey", "NoSuchBucket", "NoSuchObject"}:
+            logger.warning(
+                "Document file object missing in MinIO, document_id=%s, file_id=%s, storage_key=%s",
+                document_id,
+                file_record.id,
+                file_record.storage_key,
+            )
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File object not found in storage") from exc
+        logger.exception("Failed to download document from MinIO, document_id=%s, file_id=%s", document_id, file_record.id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"MinIO download failed: {exc.code}",
+        ) from exc
+
+    filename = _build_download_filename(document.name, file_record.extension)
+    headers = {
+        "Content-Disposition": _build_content_disposition(filename),
+        "Content-Length": str(len(payload)),
+    }
+    logger.info(
+        "Document file downloaded successfully, document_id=%s, file_id=%s, size=%s",
+        document_id,
+        file_record.id,
+        len(payload),
+    )
+    return Response(content=payload, media_type=file_record.content_type, headers=headers)
 
 
 @router.patch("/{document_id}", response_model=DocumentRead)

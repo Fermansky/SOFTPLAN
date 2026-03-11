@@ -48,6 +48,14 @@ class MinioStorage:
     def remove_object(self, storage_key: str) -> None:
         self.client.remove_object(self.bucket, storage_key)
 
+    def download_bytes(self, storage_key: str) -> bytes:
+        response = self.client.get_object(self.bucket, storage_key)
+        try:
+            return response.read()
+        finally:
+            response.close()
+            response.release_conn()
+
     def object_exists(self, storage_key: str) -> bool:
         try:
             self.client.stat_object(self.bucket, storage_key)

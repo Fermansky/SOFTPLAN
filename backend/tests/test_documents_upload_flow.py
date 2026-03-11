@@ -4,9 +4,10 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from fastapi import HTTPException
+from minio.error import S3Error
 
 from backend.app.api.routers import documents
-from backend.app.models import DocumentCreate, FileRecord
+from backend.app.models import Document, DocumentCreate, FileRecord
 
 
 class _UploadFileStub:
@@ -20,12 +21,21 @@ class _UploadFileStub:
 
 
 class _StorageStub:
-    def __init__(self, *, object_exists_result: bool = True):
+    def __init__(
+        self,
+        *,
+        object_exists_result: bool = True,
+        download_payload: bytes = b"",
+        download_error: S3Error | None = None,
+    ):
         self.bucket = "softplan"
         self.object_exists_result = object_exists_result
+        self.download_payload = download_payload
+        self.download_error = download_error
         self.upload_calls = []
         self.removed = []
         self.exists_calls = []
+        self.download_calls = []
 
     def upload_bytes(self, payload: bytes, *, content_type: str, extension: str = "") -> str:
         self.upload_calls.append(
@@ -39,6 +49,12 @@ class _StorageStub:
     def object_exists(self, storage_key: str) -> bool:
         self.exists_calls.append(storage_key)
         return self.object_exists_result
+
+    def download_bytes(self, storage_key: str) -> bytes:
+        self.download_calls.append(storage_key)
+        if self.download_error is not None:
+            raise self.download_error
+        return self.download_payload
 
 
 class _ExecResult:
@@ -226,3 +242,64 @@ class DocumentsCreateTests(TestCase):
         get_file_mock.assert_called_once()
         self.assertEqual(created_document.file_id, payload.file_id)
         self.assertTrue(session.committed)
+
+
+class DocumentsDownloadTests(TestCase):
+    def test_download_document_returns_attachment(self):
+        file_record = FileRecord(
+            file_hash="hash-1",
+            storage_bucket="softplan",
+            storage_key="doc/key.pdf",
+            file_size=12,
+            content_type="application/pdf",
+            extension=".pdf",
+        )
+        document = Document(project_id=uuid4(), file_id=file_record.id, name="requirements")
+        storage = _StorageStub(download_payload=b"hello world!")
+        session = _SessionCapture()
+
+        with patch.object(documents, "get_active_document_or_404", return_value=document):
+            with patch.object(documents, "get_file_or_404", return_value=file_record):
+                response = documents.download_document(document_id=document.id, session=session, storage=storage)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.body, b"hello world!")
+        self.assertEqual(response.media_type, "application/pdf")
+        self.assertIn("attachment;", response.headers["content-disposition"])
+        self.assertIn("requirements.pdf", response.headers["content-disposition"])
+        self.assertEqual(storage.download_calls, ["doc/key.pdf"])
+
+    def test_download_document_without_file_id_returns_404(self):
+        document = Document(project_id=uuid4(), file_id=None, name="only-meta")
+        storage = _StorageStub(download_payload=b"")
+        session = _SessionCapture()
+
+        with patch.object(documents, "get_active_document_or_404", return_value=document):
+            with patch.object(documents, "get_file_or_404") as get_file_mock:
+                with self.assertRaises(HTTPException) as ctx:
+                    documents.download_document(document_id=document.id, session=session, storage=storage)
+
+        self.assertEqual(ctx.exception.status_code, 404)
+        get_file_mock.assert_not_called()
+
+    def test_download_document_when_storage_object_missing_returns_404(self):
+        file_record = FileRecord(
+            file_hash="hash-2",
+            storage_bucket="softplan",
+            storage_key="missing/key.pdf",
+            file_size=10,
+            content_type="application/pdf",
+            extension=".pdf",
+        )
+        document = Document(project_id=uuid4(), file_id=file_record.id, name="requirements")
+        storage_error = S3Error("NoSuchKey", "missing", None, None, None, None)
+        storage = _StorageStub(download_payload=b"", download_error=storage_error)
+        session = _SessionCapture()
+
+        with patch.object(documents, "get_active_document_or_404", return_value=document):
+            with patch.object(documents, "get_file_or_404", return_value=file_record):
+                with self.assertRaises(HTTPException) as ctx:
+                    documents.download_document(document_id=document.id, session=session, storage=storage)
+
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.assertEqual(storage.download_calls, ["missing/key.pdf"])
