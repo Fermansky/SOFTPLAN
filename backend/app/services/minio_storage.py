@@ -4,6 +4,7 @@ from functools import lru_cache
 from uuid import uuid4
 
 from minio import Minio
+from minio.error import S3Error
 
 
 def _to_bool(value: str | None, *, default: bool = False) -> bool:
@@ -46,6 +47,15 @@ class MinioStorage:
 
     def remove_object(self, storage_key: str) -> None:
         self.client.remove_object(self.bucket, storage_key)
+
+    def object_exists(self, storage_key: str) -> bool:
+        try:
+            self.client.stat_object(self.bucket, storage_key)
+            return True
+        except S3Error as exc:
+            if exc.code in {"NoSuchKey", "NoSuchBucket", "NoSuchObject"}:
+                return False
+            raise
 
 
 @lru_cache(maxsize=1)

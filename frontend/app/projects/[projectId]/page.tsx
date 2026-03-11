@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useEffect, useMemo, useState } from "react"
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -45,6 +45,10 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
   const [project, setProject] = useState<ApiProject | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadMessage, setUploadMessage] = useState<string | null>(null)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -62,17 +66,17 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
         })
 
         if (res.status === 404) {
-          throw new Error("项目不存在或已删除。")
+          throw new Error("项目不存在")
         }
         if (!res.ok) {
-          throw new Error(`获取项目详情失败：${res.status}`)
+          throw new Error(`加载项目详情失败（HTTP ${res.status}）`)
         }
 
         const data = (await res.json()) as ApiProject
         setProject(data)
       } catch (fetchError) {
         if ((fetchError as Error).name === "AbortError") return
-        setError(fetchError instanceof Error ? fetchError.message : "获取项目详情失败。")
+        setError(fetchError instanceof Error ? fetchError.message : "加载项目详情失败")
       } finally {
         setLoading(false)
       }
@@ -88,14 +92,72 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
     [project]
   )
 
+  async function uploadProjectDocument(file: File) {
+    try {
+      setIsUploading(true)
+      setUploadError(null)
+      setUploadMessage(null)
+
+      const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
+      const formData = new FormData()
+      formData.append("project_id", params.projectId)
+      formData.append("name", file.name)
+      formData.append("file", file)
+
+      const res = await fetch(`${apiBase}/documents/upload`, {
+        method: "POST",
+        body: formData,
+      })
+
+      if (!res.ok) {
+        let message = `上传失败（HTTP ${res.status}）`
+        try {
+          const errorData = (await res.json()) as { detail?: string }
+          if (errorData.detail) {
+            message = errorData.detail
+          }
+        } catch {
+          // Keep fallback message when response is not JSON.
+        }
+        throw new Error(message)
+      }
+
+      setUploadMessage(`上传成功：${file.name}`)
+    } catch (uploadErr) {
+      setUploadError(uploadErr instanceof Error ? uploadErr.message : "上传失败，请重试")
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  function handleSelectFileClick() {
+    fileInputRef.current?.click()
+  }
+
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const selectedFile = event.target.files?.[0]
+    event.target.value = ""
+    if (!selectedFile) return
+    void uploadProjectDocument(selectedFile)
+  }
+
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6 lg:px-8">
       <div className="mb-4 flex items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold text-slate-900">项目详情</h1>
-        <Button asChild variant="outline">
-          <Link href="/">返回主页</Link>
-        </Button>
+        <div className="flex items-center gap-2">
+          <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileChange} />
+          <Button onClick={handleSelectFileClick} disabled={loading || Boolean(error) || isUploading}>
+            {isUploading ? "上传中..." : "上传文档"}
+          </Button>
+          <Button asChild variant="outline">
+            <Link href="/">返回列表</Link>
+          </Button>
+        </div>
       </div>
+
+      {uploadMessage ? <p className="mb-3 text-sm text-emerald-600">{uploadMessage}</p> : null}
+      {uploadError ? <p className="mb-3 text-sm text-red-600">{uploadError}</p> : null}
 
       {loading ? (
         <Card>
