@@ -1,11 +1,12 @@
-"use client"
+﻿"use client"
 
 import Link from "next/link"
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react"
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 
 type ApiProjectStatus = "draft" | "analyzing" | "completed" | "archived"
 
@@ -15,6 +16,18 @@ type ApiProject = {
   description: string
   status: ApiProjectStatus
   current_version_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+type ApiDocument = {
+  id: string
+  file_id: string | null
+  project_id: string
+  software_id: string | null
+  name: string
+  description: string
+  extra_info: Record<string, unknown> | null
   created_at: string
   updated_at: string
 }
@@ -42,26 +55,30 @@ function formatDate(value: string) {
 }
 
 export default function ProjectDetailPage({ params }: { params: { projectId: string } }) {
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
+
   const [project, setProject] = useState<ApiProject | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+
+  const [documents, setDocuments] = useState<ApiDocument[]>([])
+  const [documentsLoading, setDocumentsLoading] = useState(true)
+  const [documentsError, setDocumentsError] = useState<string | null>(null)
+
   const [isUploading, setIsUploading] = useState(false)
   const [uploadMessage, setUploadMessage] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => {
-    const controller = new AbortController()
-
-    async function fetchProjectDetail() {
+  const fetchProjectDetail = useCallback(
+    async (signal?: AbortSignal) => {
       try {
         setLoading(true)
         setError(null)
 
-        const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
         const res = await fetch(`${apiBase}/projects/${params.projectId}`, {
           method: "GET",
-          signal: controller.signal,
+          signal,
           headers: { Accept: "application/json" },
         })
 
@@ -80,17 +97,53 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
       } finally {
         setLoading(false)
       }
-    }
+    },
+    [apiBase, params.projectId]
+  )
 
-    fetchProjectDetail()
+  const fetchProjectDocuments = useCallback(
+    async (signal?: AbortSignal) => {
+      try {
+        setDocumentsLoading(true)
+        setDocumentsError(null)
+
+        const query = new URLSearchParams({
+          project_id: params.projectId,
+          limit: "200",
+        })
+        const res = await fetch(`${apiBase}/documents?${query.toString()}`, {
+          method: "GET",
+          signal,
+          headers: { Accept: "application/json" },
+        })
+
+        if (!res.ok) {
+          throw new Error(`加载项目文档失败（HTTP ${res.status}）`)
+        }
+
+        const data = (await res.json()) as ApiDocument[]
+        setDocuments(Array.isArray(data) ? data : [])
+      } catch (fetchError) {
+        if ((fetchError as Error).name === "AbortError") return
+        setDocuments([])
+        setDocumentsError(fetchError instanceof Error ? fetchError.message : "加载项目文档失败")
+      } finally {
+        setDocumentsLoading(false)
+      }
+    },
+    [apiBase, params.projectId]
+  )
+
+  useEffect(() => {
+    const controller = new AbortController()
+
+    void fetchProjectDetail(controller.signal)
+    void fetchProjectDocuments(controller.signal)
 
     return () => controller.abort()
-  }, [params.projectId])
+  }, [fetchProjectDetail, fetchProjectDocuments])
 
-  const statusMeta = useMemo(
-    () => (project ? getStatusMeta(project.status) : null),
-    [project]
-  )
+  const statusMeta = useMemo(() => (project ? getStatusMeta(project.status) : null), [project])
 
   async function uploadProjectDocument(file: File) {
     try {
@@ -98,7 +151,6 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
       setUploadError(null)
       setUploadMessage(null)
 
-      const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
       const formData = new FormData()
       formData.append("project_id", params.projectId)
       formData.append("name", file.name)
@@ -123,6 +175,7 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
       }
 
       setUploadMessage(`上传成功：${file.name}`)
+      await fetchProjectDocuments()
     } catch (uploadErr) {
       setUploadError(uploadErr instanceof Error ? uploadErr.message : "上传失败，请重试")
     } finally {
@@ -142,7 +195,7 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
   }
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6 lg:px-8">
+    <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 lg:px-8">
       <div className="mb-4 flex items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold text-slate-900">项目详情</h1>
         <div className="flex items-center gap-2">
@@ -175,38 +228,101 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
       ) : null}
 
       {!loading && !error && project ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex flex-wrap items-center gap-2 text-xl">
-              <span>{project.name}</span>
-              {statusMeta ? <Badge className={statusMeta.className}>{statusMeta.label}</Badge> : null}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-4 p-5 pt-0">
-            <div>
-              <p className="text-sm text-slate-500">项目描述</p>
-              <p className="mt-1 text-slate-900">{project.description || "--"}</p>
-            </div>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex flex-wrap items-center gap-2 text-xl">
+                <span>{project.name}</span>
+                {statusMeta ? <Badge className={statusMeta.className}>{statusMeta.label}</Badge> : null}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-4 p-5 pt-0">
               <div>
-                <p className="text-sm text-slate-500">项目 ID</p>
-                <p className="mt-1 break-all text-slate-900">{project.id}</p>
+                <p className="text-sm text-slate-500">项目描述</p>
+                <p className="mt-1 text-slate-900">{project.description || "--"}</p>
               </div>
-              <div>
-                <p className="text-sm text-slate-500">当前版本 ID</p>
-                <p className="mt-1 break-all text-slate-900">{project.current_version_id ?? "--"}</p>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <p className="text-sm text-slate-500">项目 ID</p>
+                  <p className="mt-1 break-all text-slate-900">{project.id}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-slate-500">当前版本 ID</p>
+                  <p className="mt-1 break-all text-slate-900">{project.current_version_id ?? "--"}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-slate-500">创建时间</p>
+                  <p className="mt-1 text-slate-900">{formatDate(project.created_at)}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-slate-500">更新时间</p>
+                  <p className="mt-1 text-slate-900">{formatDate(project.updated_at)}</p>
+                </div>
               </div>
-              <div>
-                <p className="text-sm text-slate-500">创建时间</p>
-                <p className="mt-1 text-slate-900">{formatDate(project.created_at)}</p>
-              </div>
-              <div>
-                <p className="text-sm text-slate-500">更新时间</p>
-                <p className="mt-1 text-slate-900">{formatDate(project.updated_at)}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>项目文档</CardTitle>
+            </CardHeader>
+            <CardContent className="p-5 pt-0">
+              {documentsError ? <p className="mb-3 text-sm text-red-600">{documentsError}</p> : null}
+              <Table className="min-w-[860px]">
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead>文档名称</TableHead>
+                    <TableHead>软件 ID</TableHead>
+                    <TableHead>描述</TableHead>
+                    <TableHead>创建时间</TableHead>
+                    <TableHead>更新时间</TableHead>
+                    <TableHead>操作</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {documentsLoading ? (
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-center text-slate-500">
+                        正在加载文档...
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                  {!documentsLoading && documents.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-center text-slate-500">
+                        当前项目暂无文档
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                  {!documentsLoading
+                    ? documents.map((item) => (
+                        <TableRow key={item.id}>
+                          <TableCell className="max-w-[260px] whitespace-normal break-words font-medium text-slate-900">
+                            {item.name || "--"}
+                          </TableCell>
+                          <TableCell className="max-w-[220px] whitespace-normal break-all text-slate-600">
+                            {item.software_id ?? "--"}
+                          </TableCell>
+                          <TableCell className="max-w-[320px] whitespace-normal break-words text-slate-600">
+                            {item.description || "--"}
+                          </TableCell>
+                          <TableCell>{formatDate(item.created_at)}</TableCell>
+                          <TableCell>{formatDate(item.updated_at)}</TableCell>
+                          <TableCell>
+                            <Button asChild size="sm" variant="outline">
+                              <a href={`${apiBase}/documents/${item.id}/download`} target="_blank" rel="noreferrer">
+                                下载
+                              </a>
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    : null}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </div>
       ) : null}
     </div>
   )

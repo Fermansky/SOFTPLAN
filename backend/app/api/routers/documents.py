@@ -67,6 +67,21 @@ def _build_content_disposition(filename: str) -> str:
     return f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{encoded_filename}"
 
 
+def _build_documents_query(
+    *,
+    offset: int,
+    limit: int,
+    project_id: UUID | None = None,
+    software_id: UUID | None = None,
+):
+    statement = select(Document).where(Document.deleted_at.is_(None))
+    if project_id is not None:
+        statement = statement.where(Document.project_id == project_id)
+    if software_id is not None:
+        statement = statement.where(Document.software_id == software_id)
+    return statement.order_by(Document.created_at.desc()).offset(offset).limit(limit)
+
+
 def _cleanup_uploaded_object(storage: MinioStorage, storage_key: str) -> None:
     try:
         storage.remove_object(storage_key)
@@ -261,12 +276,12 @@ def list_documents(
         offset,
         limit,
     )
-    statement = select(Document).where(Document.deleted_at.is_(None))
-    if project_id is not None:
-        statement = statement.where(Document.project_id == project_id)
-    if software_id is not None:
-        statement = statement.where(Document.software_id == software_id)
-    statement = statement.order_by(Document.created_at.desc()).offset(offset).limit(limit)
+    statement = _build_documents_query(
+        offset=offset,
+        limit=limit,
+        project_id=project_id,
+        software_id=software_id,
+    )
     return list(session.exec(statement).all())
 
 
