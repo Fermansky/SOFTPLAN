@@ -8,6 +8,7 @@ import { UploadDocumentDialog, type UploadDocumentPayload } from "@/components/u
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 
 type ApiProjectStatus = "draft" | "analyzing" | "completed" | "archived"
@@ -254,58 +255,78 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
             </CardHeader>
             <CardContent className="p-5 pt-0">
               {documentsError ? <p className="mb-3 text-sm text-red-600">{documentsError}</p> : null}
-              <Table className="min-w-[860px]">
-                <TableHeader>
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead>文档名称</TableHead>
-                    <TableHead>软件 ID</TableHead>
-                    <TableHead>描述</TableHead>
-                    <TableHead>创建时间</TableHead>
-                    <TableHead>更新时间</TableHead>
-                    <TableHead>操作</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {documentsLoading ? (
+              {documentsLoading ? (
+                <Table className="min-w-[860px]">
+                  <TableHeader>
+                    <TableRow className="hover:bg-transparent">
+                      <TableHead>文档名称</TableHead>
+                      <TableHead>软件 ID</TableHead>
+                      <TableHead>描述</TableHead>
+                      <TableHead>创建时间</TableHead>
+                      <TableHead>更新时间</TableHead>
+                      <TableHead>操作</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     <TableRow>
                       <TableCell colSpan={6} className="text-center text-slate-500">
                         正在加载文档...
                       </TableCell>
                     </TableRow>
-                  ) : null}
-                  {!documentsLoading && documents.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={6} className="text-center text-slate-500">
-                        当前项目暂无文档
-                      </TableCell>
+                  </TableBody>
+                </Table>
+              ) : documents.length === 0 ? (
+                <Empty className="rounded-2xl border border-dashed border-slate-300 bg-slate-50">
+                  <EmptyHeader>
+                    <EmptyTitle>当前项目暂无文档</EmptyTitle>
+                    <EmptyDescription>请先上传文档，后续可在此查看和下载。</EmptyDescription>
+                  </EmptyHeader>
+                  <EmptyContent>
+                    <UploadDocumentDialog
+                      onUploadDocument={uploadProjectDocument}
+                      disabled={loading || Boolean(error)}
+                      isUploading={isUploading}
+                    />
+                  </EmptyContent>
+                </Empty>
+              ) : (
+                <Table className="min-w-[860px]">
+                  <TableHeader>
+                    <TableRow className="hover:bg-transparent">
+                      <TableHead>文档名称</TableHead>
+                      <TableHead>软件 ID</TableHead>
+                      <TableHead>描述</TableHead>
+                      <TableHead>创建时间</TableHead>
+                      <TableHead>更新时间</TableHead>
+                      <TableHead>操作</TableHead>
                     </TableRow>
-                  ) : null}
-                  {!documentsLoading
-                    ? documents.map((item) => (
-                        <TableRow key={item.id}>
-                          <TableCell className="max-w-[260px] whitespace-normal break-words font-medium text-slate-900">
-                            {item.name || "--"}
-                          </TableCell>
-                          <TableCell className="max-w-[220px] whitespace-normal break-all text-slate-600">
-                            {item.software_id ?? "--"}
-                          </TableCell>
-                          <TableCell className="max-w-[320px] whitespace-normal break-words text-slate-600">
-                            {item.description || "--"}
-                          </TableCell>
-                          <TableCell>{formatDate(item.created_at)}</TableCell>
-                          <TableCell>{formatDate(item.updated_at)}</TableCell>
-                          <TableCell>
-                            <Button asChild size="sm" variant="outline">
-                              <a href={`${apiBase}/documents/${item.id}/download`} target="_blank" rel="noreferrer">
-                                下载
-                              </a>
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    : null}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {documents.map((item) => (
+                      <TableRow key={item.id}>
+                        <TableCell className="max-w-[260px] whitespace-normal break-words font-medium text-slate-900">
+                          {item.name || "--"}
+                        </TableCell>
+                        <TableCell className="max-w-[220px] whitespace-normal break-all text-slate-600">
+                          {item.software_id ?? "--"}
+                        </TableCell>
+                        <TableCell className="max-w-[320px] whitespace-normal break-words text-slate-600">
+                          {item.description || "--"}
+                        </TableCell>
+                        <TableCell>{formatDate(item.created_at)}</TableCell>
+                        <TableCell>{formatDate(item.updated_at)}</TableCell>
+                        <TableCell>
+                          <Button asChild size="sm" variant="outline">
+                            <a href={`${apiBase}/documents/${item.id}/download`} target="_blank" rel="noreferrer">
+                              下载
+                            </a>
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
             </CardContent>
           </Card>
         </div>
