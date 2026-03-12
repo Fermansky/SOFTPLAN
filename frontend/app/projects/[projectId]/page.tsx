@@ -2,6 +2,7 @@
 
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { toast } from "sonner"
 
 import { UploadDocumentDialog, type UploadDocumentPayload } from "@/components/upload-document-dialog"
 import { Badge } from "@/components/ui/badge"
@@ -67,7 +68,6 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
   const [documentsError, setDocumentsError] = useState<string | null>(null)
 
   const [isUploading, setIsUploading] = useState(false)
-  const [uploadMessage, setUploadMessage] = useState<string | null>(null)
 
   const fetchProjectDetail = useCallback(
     async (signal?: AbortSignal) => {
@@ -147,8 +147,6 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
   async function uploadProjectDocument({ file, name, description }: UploadDocumentPayload) {
     try {
       setIsUploading(true)
-      setUploadMessage(null)
-
       const formData = new FormData()
       formData.append("project_id", params.projectId)
       formData.append("name", name)
@@ -173,7 +171,9 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
         throw new Error(message)
       }
 
-      setUploadMessage(`上传成功：${name}`)
+      toast.success("上传成功", {
+        description: `文档「${name}」已上传。`,
+      })
       await fetchProjectDocuments()
     } catch (uploadErr) {
       throw uploadErr instanceof Error ? uploadErr : new Error("上传失败，请重试")
@@ -197,8 +197,6 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
           </Button>
         </div>
       </div>
-
-      {uploadMessage ? <p className="mb-3 text-sm text-emerald-600">{uploadMessage}</p> : null}
 
       {loading ? (
         <Card>

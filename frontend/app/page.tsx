@@ -1,8 +1,9 @@
-﻿"use client"
+"use client"
 
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { FolderOpen, Search } from "lucide-react"
+import { toast } from "sonner"
 
 import { CreateProjectDialog, type CreateProjectPayload } from "@/components/create-project-dialog"
 import {
@@ -15,7 +16,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -46,12 +46,6 @@ type ProjectItem = {
   estimatedCost: number | null
   lastUpdated: string
   reportGeneratedAt?: string | null
-}
-
-type DeleteAlert = {
-  variant: "default" | "destructive"
-  title: string
-  description: string
 }
 
 const MOCK_PROJECTS: ProjectItem[] = [
@@ -192,7 +186,6 @@ export default function HomePage() {
   const [projectToDelete, setProjectToDelete] = useState<ProjectItem | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState("")
-  const [deleteAlert, setDeleteAlert] = useState<DeleteAlert | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -226,22 +219,23 @@ export default function HomePage() {
     return { total, pending, reports }
   }, [filteredProjects])
 
-  useEffect(() => {
-    if (!deleteAlert) return
-
-    const timer = window.setTimeout(() => {
-      setDeleteAlert(null)
-    }, 3000)
-
-    return () => window.clearTimeout(timer)
-  }, [deleteAlert])
-
   const hasProjects = projects.length > 0
 
   async function handleCreateProject({ name, description }: CreateProjectPayload) {
-    const created = await createProjectOnBackend({ name, description })
-    setProjects((prev) => [created, ...prev])
-    setUsingMockData(false)
+    try {
+      const created = await createProjectOnBackend({ name, description })
+      setProjects((prev) => [created, ...prev])
+      setUsingMockData(false)
+      toast.success("创建成功", {
+        description: `项目「${created.name}」已创建。`,
+      })
+    } catch (createProjectError) {
+      const errorMessage = createProjectError instanceof Error ? createProjectError.message : "创建项目失败。"
+      toast.error("创建失败", {
+        description: errorMessage,
+      })
+      throw createProjectError
+    }
   }
 
   async function handleConfirmDelete() {
@@ -258,17 +252,13 @@ export default function HomePage() {
 
       setProjects((prev) => prev.filter((item) => item.id !== targetProject.id))
       setProjectToDelete(null)
-      setDeleteAlert({
-        variant: "default",
-        title: "删除成功",
+      toast.success("删除成功", {
         description: `项目「${targetProject.name}」已删除。`,
       })
     } catch (deleteProjectError) {
       const errorMessage = deleteProjectError instanceof Error ? deleteProjectError.message : "删除项目失败。"
       setDeleteError(errorMessage)
-      setDeleteAlert({
-        variant: "destructive",
-        title: "删除失败",
+      toast.error("删除失败", {
         description: errorMessage,
       })
     } finally {
@@ -278,19 +268,6 @@ export default function HomePage() {
 
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-      {deleteAlert ? (
-        <div className="fixed right-6 top-6 z-[60] w-[min(92vw,420px)]">
-          <Alert variant={deleteAlert.variant} className="shadow-lg">
-            <AlertTitle>{deleteAlert.title}</AlertTitle>
-            <AlertDescription>{deleteAlert.description}</AlertDescription>
-            <AlertAction>
-              <Button size="xs" variant="ghost" onClick={() => setDeleteAlert(null)}>
-                关闭
-              </Button>
-            </AlertAction>
-          </Alert>
-        </div>
-      ) : null}
 
       <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm backdrop-blur sm:p-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">

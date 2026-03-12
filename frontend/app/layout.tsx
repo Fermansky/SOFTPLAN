@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { ReactNode } from "react";
 import { Manrope, IBM_Plex_Mono } from "next/font/google";
 import { cn } from "@/lib/utils";
+import { Toaster } from "@/components/ui/sonner";
 
 const manrope = Manrope({
   subsets: ["latin"],
@@ -23,7 +24,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="zh-CN">
-      <body className={`${manrope.variable} ${plexMono.variable}`}>{children}</body>
+      <body className={`${manrope.variable} ${plexMono.variable}`}>
+        {children}
+        <Toaster position="top-right" richColors closeButton />
+      </body>
     </html>
   );
 }
