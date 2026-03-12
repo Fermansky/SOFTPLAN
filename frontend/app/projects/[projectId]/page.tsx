@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 
 type ApiProjectStatus = "draft" | "analyzing" | "completed" | "archived"
@@ -65,6 +66,89 @@ function formatDate(value: string) {
     minute: "2-digit",
     hour12: false,
   })
+}
+
+function DocumentsTableSkeleton() {
+  return (
+    <Table className="min-w-[860px]">
+      <TableHeader>
+        <TableRow className="hover:bg-transparent">
+          <TableHead>文档名称</TableHead>
+          <TableHead>软件 ID</TableHead>
+          <TableHead>描述</TableHead>
+          <TableHead>创建时间</TableHead>
+          <TableHead>更新时间</TableHead>
+          <TableHead>操作</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {Array.from({ length: 3 }).map((_, index) => (
+          <TableRow key={index}>
+            <TableCell>
+              <Skeleton className="h-4 w-44" />
+            </TableCell>
+            <TableCell>
+              <Skeleton className="h-4 w-28" />
+            </TableCell>
+            <TableCell>
+              <Skeleton className="h-4 w-56" />
+            </TableCell>
+            <TableCell>
+              <Skeleton className="h-4 w-32" />
+            </TableCell>
+            <TableCell>
+              <Skeleton className="h-4 w-32" />
+            </TableCell>
+            <TableCell>
+              <div className="flex gap-2">
+                <Skeleton className="h-8 w-14" />
+                <Skeleton className="h-8 w-14" />
+              </div>
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  )
+}
+
+function ProjectDetailSkeleton() {
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>
+            <Skeleton className="h-7 w-64" />
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-4 p-5 pt-0">
+          <div className="space-y-2">
+            <Skeleton className="h-4 w-20" />
+            <Skeleton className="h-4 w-4/5" />
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {Array.from({ length: 4 }).map((_, index) => (
+              <div key={index} className="space-y-2">
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-4 w-40" />
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>
+            <Skeleton className="h-6 w-24" />
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-5 pt-0">
+          <DocumentsTableSkeleton />
+        </CardContent>
+      </Card>
+    </div>
+  )
 }
 
 export default function ProjectDetailPage({ params }: { params: { projectId: string } }) {
@@ -256,11 +340,7 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
         </div>
       </div>
 
-      {loading ? (
-        <Card>
-          <CardContent className="p-5 text-slate-600">正在加载项目详情...</CardContent>
-        </Card>
-      ) : null}
+      {loading ? <ProjectDetailSkeleton /> : null}
 
       {!loading && error ? (
         <Card>
@@ -313,25 +393,7 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
             <CardContent className="p-5 pt-0">
               {documentsError ? <p className="mb-3 text-sm text-red-600">{documentsError}</p> : null}
               {documentsLoading ? (
-                <Table className="min-w-[860px]">
-                  <TableHeader>
-                    <TableRow className="hover:bg-transparent">
-                      <TableHead>文档名称</TableHead>
-                      <TableHead>软件 ID</TableHead>
-                      <TableHead>描述</TableHead>
-                      <TableHead>创建时间</TableHead>
-                      <TableHead>更新时间</TableHead>
-                      <TableHead>操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    <TableRow>
-                      <TableCell colSpan={6} className="text-center text-slate-500">
-                        正在加载文档...
-                      </TableCell>
-                    </TableRow>
-                  </TableBody>
-                </Table>
+                <DocumentsTableSkeleton />
               ) : documents.length === 0 ? (
                 <Empty className="rounded-2xl border border-dashed border-slate-300 bg-slate-50">
                   <EmptyHeader>

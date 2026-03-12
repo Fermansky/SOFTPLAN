@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { Input } from "@/components/ui/input"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 
 type ApiProjectStatus = "draft" | "analyzing" | "completed" | "archived"
@@ -179,8 +180,63 @@ async function deleteProjectOnBackend(projectId: string): Promise<void> {
   }
 }
 
+function ProjectsTableSkeleton() {
+  return (
+    <Card className="overflow-hidden">
+      <Table className="min-w-[980px]">
+        <TableHeader>
+          <TableRow className="hover:bg-transparent">
+            <TableHead>项目名称</TableHead>
+            <TableHead>状态</TableHead>
+            <TableHead>当前版本</TableHead>
+            <TableHead>规模 (FP)</TableHead>
+            <TableHead>预估成本</TableHead>
+            <TableHead>最后更新</TableHead>
+            <TableHead>快捷操作</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {Array.from({ length: 4 }).map((_, index) => (
+            <TableRow key={index}>
+              <TableCell>
+                <div className="space-y-2">
+                  <Skeleton className="h-4 w-40" />
+                  <Skeleton className="h-3 w-64" />
+                </div>
+              </TableCell>
+              <TableCell>
+                <Skeleton className="h-6 w-16 rounded-full" />
+              </TableCell>
+              <TableCell>
+                <Skeleton className="h-4 w-16" />
+              </TableCell>
+              <TableCell>
+                <Skeleton className="h-4 w-12" />
+              </TableCell>
+              <TableCell>
+                <Skeleton className="h-4 w-20" />
+              </TableCell>
+              <TableCell>
+                <Skeleton className="h-4 w-32" />
+              </TableCell>
+              <TableCell>
+                <div className="flex flex-wrap gap-2">
+                  <Skeleton className="h-8 w-16" />
+                  <Skeleton className="h-8 w-16" />
+                  <Skeleton className="h-8 w-16" />
+                </div>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </Card>
+  )
+}
+
 export default function HomePage() {
   const [projects, setProjects] = useState<ProjectItem[]>([])
+  const [isProjectsLoading, setIsProjectsLoading] = useState(true)
   const [query, setQuery] = useState("")
   const [usingMockData, setUsingMockData] = useState(false)
   const [projectToDelete, setProjectToDelete] = useState<ProjectItem | null>(null)
@@ -192,12 +248,18 @@ export default function HomePage() {
 
     fetchProjectsFromBackend(controller.signal)
       .then((items) => {
+        if (controller.signal.aborted) return
         setProjects(items)
         setUsingMockData(false)
       })
-      .catch(() => {
+      .catch((fetchError) => {
+        if ((fetchError as Error).name === "AbortError" || controller.signal.aborted) return
         setProjects(MOCK_PROJECTS)
         setUsingMockData(true)
+      })
+      .finally(() => {
+        if (controller.signal.aborted) return
+        setIsProjectsLoading(false)
       })
 
     return () => controller.abort()
@@ -281,14 +343,15 @@ export default function HomePage() {
               placeholder="按项目名称或描述搜索"
               className="pl-9"
               aria-label="全局搜索"
+              disabled={isProjectsLoading}
             />
           </div>
-          {hasProjects ? <CreateProjectDialog onCreateProject={handleCreateProject} /> : null}
+          {!isProjectsLoading && hasProjects ? <CreateProjectDialog onCreateProject={handleCreateProject} /> : null}
         </div>
       </div>
 
       <div className="mt-5 space-y-4">
-        {usingMockData ? (
+        {!isProjectsLoading && usingMockData ? (
           <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-600">
             后端暂不可用，当前展示本地示例数据。
           </div>
@@ -298,23 +361,25 @@ export default function HomePage() {
           <Card>
             <CardContent className="p-5">
               <p className="text-sm text-slate-500">项目总数</p>
-              <p className="mt-1 text-3xl font-semibold">{stats.total}</p>
+              {isProjectsLoading ? <Skeleton className="mt-2 h-9 w-16" /> : <p className="mt-1 text-3xl font-semibold">{stats.total}</p>}
             </CardContent>
           </Card>
           <Card>
             <CardContent className="p-5">
               <p className="text-sm text-slate-500">待确认项目</p>
-              <p className="mt-1 text-3xl font-semibold">{stats.pending}</p>
+              {isProjectsLoading ? <Skeleton className="mt-2 h-9 w-16" /> : <p className="mt-1 text-3xl font-semibold">{stats.pending}</p>}
             </CardContent>
           </Card>
           <Card>
             <CardContent className="p-5">
               <p className="text-sm text-slate-500">已生成报告</p>
-              <p className="mt-1 text-3xl font-semibold">{stats.reports}</p>
+              {isProjectsLoading ? <Skeleton className="mt-2 h-9 w-16" /> : <p className="mt-1 text-3xl font-semibold">{stats.reports}</p>}
             </CardContent>
           </Card>
         </section>
-        {hasProjects ? (
+        {isProjectsLoading ? (
+          <ProjectsTableSkeleton />
+        ) : hasProjects ? (
           <Card className="overflow-hidden">
             <Table className="min-w-[980px]">
               <TableHeader>
