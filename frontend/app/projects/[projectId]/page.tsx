@@ -5,6 +5,16 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
 import { UploadDocumentDialog, type UploadDocumentPayload } from "@/components/upload-document-dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -69,6 +79,9 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
   const [documentsError, setDocumentsError] = useState<string | null>(null)
 
   const [isUploading, setIsUploading] = useState(false)
+  const [documentToDelete, setDocumentToDelete] = useState<ApiDocument | null>(null)
+  const [isDeletingDocument, setIsDeletingDocument] = useState(false)
+  const [deleteDocumentError, setDeleteDocumentError] = useState("")
 
   const fetchProjectDetail = useCallback(
     async (signal?: AbortSignal) => {
@@ -180,6 +193,50 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
       throw uploadErr instanceof Error ? uploadErr : new Error("上传失败，请重试")
     } finally {
       setIsUploading(false)
+    }
+  }
+
+  async function deleteProjectDocument(documentId: string) {
+    const res = await fetch(`${apiBase}/documents/${documentId}`, {
+      method: "DELETE",
+    })
+
+    if (!res.ok) {
+      let message = `删除失败（HTTP ${res.status}）`
+      try {
+        const errorData = (await res.json()) as { detail?: string }
+        if (errorData.detail) {
+          message = errorData.detail
+        }
+      } catch {
+        // Keep fallback message when response is not JSON.
+      }
+      throw new Error(message)
+    }
+  }
+
+  async function handleConfirmDeleteDocument() {
+    const targetDocument = documentToDelete
+    if (!targetDocument) return
+
+    setIsDeletingDocument(true)
+    setDeleteDocumentError("")
+
+    try {
+      await deleteProjectDocument(targetDocument.id)
+      setDocuments((prev) => prev.filter((item) => item.id !== targetDocument.id))
+      setDocumentToDelete(null)
+      toast.success("删除成功", {
+        description: `文档「${targetDocument.name || "--"}」已删除。`,
+      })
+    } catch (deleteError) {
+      const errorMessage = deleteError instanceof Error ? deleteError.message : "删除文档失败。"
+      setDeleteDocumentError(errorMessage)
+      toast.error("删除失败", {
+        description: errorMessage,
+      })
+    } finally {
+      setIsDeletingDocument(false)
     }
   }
 
@@ -316,11 +373,23 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
                         <TableCell>{formatDate(item.created_at)}</TableCell>
                         <TableCell>{formatDate(item.updated_at)}</TableCell>
                         <TableCell>
-                          <Button asChild size="sm" variant="outline">
-                            <a href={`${apiBase}/documents/${item.id}/download`} target="_blank" rel="noreferrer">
-                              下载
-                            </a>
-                          </Button>
+                          <div className="flex flex-wrap gap-2">
+                            <Button asChild size="sm" variant="outline">
+                              <a href={`${apiBase}/documents/${item.id}/download`} target="_blank" rel="noreferrer">
+                                下载
+                              </a>
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              onClick={() => {
+                                setDeleteDocumentError("")
+                                setDocumentToDelete(item)
+                              }}
+                            >
+                              删除
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -331,6 +400,43 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
           </Card>
         </div>
       ) : null}
+
+      <AlertDialog
+        open={Boolean(documentToDelete)}
+        onOpenChange={(open) => {
+          if (!open && !isDeletingDocument) {
+            setDocumentToDelete(null)
+            setDeleteDocumentError("")
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>确认删除文档</AlertDialogTitle>
+            <AlertDialogDescription>
+              {documentToDelete
+                ? `确定要删除文档「${documentToDelete.name || "--"}」吗？该操作不可恢复。`
+                : "确定要删除该文档吗？"}
+            </AlertDialogDescription>
+            {deleteDocumentError ? (
+              <AlertDialogDescription className="text-destructive">{deleteDocumentError}</AlertDialogDescription>
+            ) : null}
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeletingDocument}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={isDeletingDocument}
+              onClick={(event) => {
+                event.preventDefault()
+                void handleConfirmDeleteDocument()
+              }}
+            >
+              {isDeletingDocument ? "删除中..." : "确认删除"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
