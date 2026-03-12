@@ -1,8 +1,9 @@
-﻿"use client"
+"use client"
 
 import Link from "next/link"
-import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
+import { UploadDocumentDialog, type UploadDocumentPayload } from "@/components/upload-document-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -67,8 +68,6 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
 
   const [isUploading, setIsUploading] = useState(false)
   const [uploadMessage, setUploadMessage] = useState<string | null>(null)
-  const [uploadError, setUploadError] = useState<string | null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const fetchProjectDetail = useCallback(
     async (signal?: AbortSignal) => {
@@ -145,15 +144,15 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
 
   const statusMeta = useMemo(() => (project ? getStatusMeta(project.status) : null), [project])
 
-  async function uploadProjectDocument(file: File) {
+  async function uploadProjectDocument({ file, name, description }: UploadDocumentPayload) {
     try {
       setIsUploading(true)
-      setUploadError(null)
       setUploadMessage(null)
 
       const formData = new FormData()
       formData.append("project_id", params.projectId)
-      formData.append("name", file.name)
+      formData.append("name", name)
+      formData.append("description", description)
       formData.append("file", file)
 
       const res = await fetch(`${apiBase}/documents/upload`, {
@@ -174,24 +173,13 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
         throw new Error(message)
       }
 
-      setUploadMessage(`上传成功：${file.name}`)
+      setUploadMessage(`上传成功：${name}`)
       await fetchProjectDocuments()
     } catch (uploadErr) {
-      setUploadError(uploadErr instanceof Error ? uploadErr.message : "上传失败，请重试")
+      throw uploadErr instanceof Error ? uploadErr : new Error("上传失败，请重试")
     } finally {
       setIsUploading(false)
     }
-  }
-
-  function handleSelectFileClick() {
-    fileInputRef.current?.click()
-  }
-
-  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const selectedFile = event.target.files?.[0]
-    event.target.value = ""
-    if (!selectedFile) return
-    void uploadProjectDocument(selectedFile)
   }
 
   return (
@@ -199,10 +187,11 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
       <div className="mb-4 flex items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold text-slate-900">项目详情</h1>
         <div className="flex items-center gap-2">
-          <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileChange} />
-          <Button onClick={handleSelectFileClick} disabled={loading || Boolean(error) || isUploading}>
-            {isUploading ? "上传中..." : "上传文档"}
-          </Button>
+          <UploadDocumentDialog
+            onUploadDocument={uploadProjectDocument}
+            disabled={loading || Boolean(error)}
+            isUploading={isUploading}
+          />
           <Button asChild variant="outline">
             <Link href="/">返回列表</Link>
           </Button>
@@ -210,7 +199,6 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
       </div>
 
       {uploadMessage ? <p className="mb-3 text-sm text-emerald-600">{uploadMessage}</p> : null}
-      {uploadError ? <p className="mb-3 text-sm text-red-600">{uploadError}</p> : null}
 
       {loading ? (
         <Card>
