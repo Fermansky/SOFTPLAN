@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { Search } from "lucide-react"
+import { FolderOpen, Search } from "lucide-react"
 
-import { CreateProjectDialog } from "@/components/create-project-dialog"
+import { CreateProjectDialog, type CreateProjectPayload } from "@/components/create-project-dialog"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,6 +19,7 @@ import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/u
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 
@@ -235,6 +236,14 @@ export default function HomePage() {
     return () => window.clearTimeout(timer)
   }, [deleteAlert])
 
+  const hasProjects = projects.length > 0
+
+  async function handleCreateProject({ name, description }: CreateProjectPayload) {
+    const created = await createProjectOnBackend({ name, description })
+    setProjects((prev) => [created, ...prev])
+    setUsingMockData(false)
+  }
+
   async function handleConfirmDelete() {
     const targetProject = projectToDelete
     if (!targetProject) return
@@ -297,13 +306,7 @@ export default function HomePage() {
               aria-label="全局搜索"
             />
           </div>
-          <CreateProjectDialog
-            onCreateProject={async ({ name, description }) => {
-              const created = await createProjectOnBackend({ name, description })
-              setProjects((prev) => [created, ...prev])
-              setUsingMockData(false)
-            }}
-          />
+          {hasProjects ? <CreateProjectDialog onCreateProject={handleCreateProject} /> : null}
         </div>
       </div>
 
@@ -334,74 +337,92 @@ export default function HomePage() {
             </CardContent>
           </Card>
         </section>
+        {hasProjects ? (
+          <Card className="overflow-hidden">
+            <Table className="min-w-[980px]">
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead>项目名称</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>当前版本</TableHead>
+                  <TableHead>规模 (FP)</TableHead>
+                  <TableHead>预估成本</TableHead>
+                  <TableHead>最后更新</TableHead>
+                  <TableHead>快捷操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredProjects.map((item) => {
+                  const status = getStatusMeta(item.status)
 
-        <Card className="overflow-hidden">
-          <Table className="min-w-[980px]">
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <TableHead>项目名称</TableHead>
-                <TableHead>状态</TableHead>
-                <TableHead>当前版本</TableHead>
-                <TableHead>规模 (FP)</TableHead>
-                <TableHead>预估成本</TableHead>
-                <TableHead>最后更新</TableHead>
-                <TableHead>快捷操作</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredProjects.map((item) => {
-                const status = getStatusMeta(item.status)
-
-                return (
-                  <TableRow key={item.id}>
-                    <TableCell>
-                      <div className="space-y-1">
-                        <Link href={`/projects/${item.id}`} className="font-semibold text-slate-900 hover:underline">
-                          {item.name}
-                        </Link>
-                        <p className="text-xs text-slate-500">{item.description}</p>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge className={status.className}>{status.label}</Badge>
-                    </TableCell>
-                    <TableCell>{item.version}</TableCell>
-                    <TableCell>{item.fp ?? "--"}</TableCell>
-                    <TableCell>{formatCost(item.estimatedCost)}</TableCell>
-                    <TableCell>{formatDate(item.lastUpdated)}</TableCell>
-                    <TableCell>
-                      <div className="flex flex-wrap gap-2">
-                        <Button size="sm" variant="outline">
-                          查看报告
-                        </Button>
-                        <Button size="sm" variant="secondary">
-                          开始分析
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="destructive"
-                          onClick={() => {
-                            setDeleteError("")
-                            setProjectToDelete(item)
-                          }}
-                        >
-                          删除
-                        </Button>
-                      </div>
+                  return (
+                    <TableRow key={item.id}>
+                      <TableCell>
+                        <div className="space-y-1">
+                          <Link href={`/projects/${item.id}`} className="font-semibold text-slate-900 hover:underline">
+                            {item.name}
+                          </Link>
+                          <p className="text-xs text-slate-500">{item.description}</p>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge className={status.className}>{status.label}</Badge>
+                      </TableCell>
+                      <TableCell>{item.version}</TableCell>
+                      <TableCell>{item.fp ?? "--"}</TableCell>
+                      <TableCell>{formatCost(item.estimatedCost)}</TableCell>
+                      <TableCell>{formatDate(item.lastUpdated)}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap gap-2">
+                          <Button size="sm" variant="outline">
+                            查看报告
+                          </Button>
+                          <Button size="sm" variant="secondary">
+                            开始分析
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={() => {
+                              setDeleteError("")
+                              setProjectToDelete(item)
+                            }}
+                          >
+                            删除
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+                {filteredProjects.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center text-slate-500">
+                      未找到匹配的项目
                     </TableCell>
                   </TableRow>
-                )
-              })}
-              {filteredProjects.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="text-center text-slate-500">
-                    未找到匹配的项目
-                  </TableCell>
-                </TableRow>
-              ) : null}
-            </TableBody>
-          </Table>
-        </Card>
+                ) : null}
+              </TableBody>
+            </Table>
+          </Card>
+        ) : (
+          <Card>
+            <CardContent className="p-6">
+              <Empty className="rounded-2xl border border-dashed border-slate-300 bg-slate-50">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <FolderOpen className="size-4" />
+                  </EmptyMedia>
+                  <EmptyTitle>暂无项目</EmptyTitle>
+                  <EmptyDescription>当前还没有项目，请先创建一个新项目。</EmptyDescription>
+                </EmptyHeader>
+                <EmptyContent>
+                  <CreateProjectDialog onCreateProject={handleCreateProject} />
+                </EmptyContent>
+              </Empty>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       <AlertDialog
@@ -439,4 +460,3 @@ export default function HomePage() {
     </div>
   )
 }
-
