@@ -4,7 +4,12 @@ from fastapi import HTTPException, status
 from sqlmodel import Session, select
 
 from ..models import Document, FileRecord, Project, ProjectSoftwareRelation, Software
-from ..services import MinioStorage, get_minio_storage as get_minio_storage_service
+from ..services import (
+    FileConvertServiceClient,
+    MinioStorage,
+    get_file_convert_service_client as get_file_convert_service_client_service,
+    get_minio_storage as get_minio_storage_service,
+)
 
 
 def get_active_project_or_404(project_id: UUID, session: Session) -> Project:
@@ -57,3 +62,7 @@ def get_project_software_relation_or_404(
 
 def get_minio_storage() -> MinioStorage:
     return get_minio_storage_service()
+
+
+def get_file_convert_service_client() -> FileConvertServiceClient:
+    return get_file_convert_service_client_service()

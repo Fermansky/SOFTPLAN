@@ -22,9 +22,27 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-softplan}
+      FILE_CONVERT_SERVICE_BASE_URL: http://file-convert-service:8000
     depends_on:
       postgres:
         condition: service_healthy
+      minio:
+        condition: service_started
+      file-convert-service:
+        condition: service_started
+
+  file-convert-service:
+    build:
+      context: ./file-convert-service
+    container_name: softplan-file-convert-service
+    ports:
+      - "8010:8000"
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-softplan}
+    depends_on:
       minio:
         condition: service_started
 
