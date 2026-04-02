@@ -19,7 +19,13 @@ The service uses these environment variables:
 - `MINIO_BUCKET` (default: `softplan`)
 - `MINIO_SECURE` (default: `false`)
 
-## Internal Storage APIs
+## Marker Dependency
+
+- `marker-pdf` is included in `requirements.txt`.
+
+## Internal APIs
 
 - `POST /internal/storage/objects` upload file to MinIO
 - `GET /internal/storage/objects/{storage_key}` download file bytes from MinIO
+- `POST /internal/converters/pdf-to-markdown` convert a PDF in MinIO to Markdown text
+  - Request JSON: `{"storage_key": "<object-key>.pdf"}`
