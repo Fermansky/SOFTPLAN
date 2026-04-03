@@ -29,7 +29,7 @@ async def upload_object(
     extension = Path(file.filename or "").suffix.lower()
     content_type = file.content_type or "application/octet-stream"
     try:
-        storage_key = storage.upload_bytes(payload, content_type=content_type, extension=extension)
+        storage_ref = storage.upload_document_bytes(payload, content_type=content_type, extension=extension)
     except S3Error as exc:
         logger.exception("Failed to upload file to MinIO")
         raise HTTPException(
@@ -37,7 +37,7 @@ async def upload_object(
             detail=f"MinIO upload failed: {exc.code}",
         ) from exc
 
-    return UploadObjectRead(bucket=storage.bucket, storage_key=storage_key)
+    return UploadObjectRead(bucket=storage_ref.bucket, storage_key=storage_ref.storage_key)
 
 
 @router.get("/objects/{storage_key:path}")

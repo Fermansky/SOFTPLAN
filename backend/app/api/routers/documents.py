@@ -1,8 +1,4 @@
 import logging
-import hashlib
-import json
-from pathlib import Path
-from typing import Any
 from urllib.parse import quote
 from uuid import UUID
 
@@ -19,36 +15,13 @@ from ..dependencies import (
     get_software_or_404,
 )
 from ...database import get_session
-from ...models import Document, DocumentCreate, DocumentRead, DocumentUpdate, FileRecord
+from ...models import Document, DocumentCreate, DocumentRead, DocumentUpdate
 from ...models.common import utc_now
 from ...services import MinioStorage
+from ...services.document_upload_service import upload_document_with_dedupe
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 logger = logging.getLogger(__name__)
-
-
-def _parse_extra_info(extra_info: str | None) -> dict[str, Any] | None:
-    if extra_info is None or extra_info.strip() == "":
-        return None
-    try:
-        parsed = json.loads(extra_info)
-    except json.JSONDecodeError as exc:
-        logger.warning("Invalid extra_info JSON payload")
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="extra_info is not valid JSON") from exc
-    if parsed is None:
-        return None
-    if not isinstance(parsed, dict):
-        logger.warning("extra_info is not a JSON object")
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="extra_info must be a JSON object",
-        )
-    return parsed
-
-
-def _find_file_by_hash(file_hash: str, session: Session) -> FileRecord | None:
-    statement = select(FileRecord).where(FileRecord.file_hash == file_hash)
-    return session.exec(statement).first()
 
 
 def _build_download_filename(name: str, extension: str) -> str:
@@ -82,40 +55,6 @@ def _build_documents_query(
     return statement.order_by(Document.created_at.desc()).offset(offset).limit(limit)
 
 
-def _cleanup_uploaded_object(storage: MinioStorage, storage_key: str) -> None:
-    try:
-        storage.remove_object(storage_key)
-    except S3Error:
-        logger.warning("Failed to cleanup uploaded object from MinIO, storage_key=%s", storage_key)
-
-
-def _repair_missing_object_if_needed(
-    *,
-    file_record: FileRecord,
-    storage: MinioStorage,
-    file_content: bytes,
-    content_type: str,
-    extension: str,
-) -> str | None:
-    if storage.object_exists(file_record.storage_key):
-        return None
-
-    # Existing hash record points to a missing object. Re-upload and update
-    # metadata so future dedupe can safely reuse this file row.
-    logger.warning(
-        "Existing file object missing, repairing file_id=%s, old_storage_key=%s",
-        file_record.id,
-        file_record.storage_key,
-    )
-    new_storage_key = storage.upload_bytes(file_content, content_type=content_type, extension=extension)
-    file_record.storage_bucket = storage.bucket
-    file_record.storage_key = new_storage_key
-    file_record.file_size = len(file_content)
-    file_record.content_type = content_type
-    file_record.extension = extension
-    return new_storage_key
-
-
 @router.post("/upload", response_model=DocumentRead, status_code=status.HTTP_201_CREATED)
 async def upload_document(
     project_id: UUID = Form(...),
@@ -132,102 +71,16 @@ async def upload_document(
     if software_id is not None:
         get_software_or_404(software_id, session)
 
-    file_content = await file.read()
-    if not file_content:
-        logger.warning("Rejected empty uploaded file for project_id=%s", project_id)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty")
-
-    content_type = file.content_type or "application/octet-stream"
-    extension = Path(file.filename or "").suffix.lower()
-    file_hash = hashlib.sha256(file_content).hexdigest()
-    document_name = (name or "").strip() or file.filename or "uploaded-file"
-    parsed_extra_info = _parse_extra_info(extra_info)
-
-    # Dedupe by content hash. If an identical physical file already exists,
-    # only create a new document row referencing the existing file_id.
-    file_record = _find_file_by_hash(file_hash, session)
-    storage_key: str | None = None
-    uploaded_storage_key: str | None = None
-    created_new_file = False
-    repaired_existing_file = False
-    if file_record is None:
-        try:
-            storage_key = storage.upload_bytes(file_content, content_type=content_type, extension=extension)
-        except S3Error as exc:
-            logger.exception("MinIO upload failed for project_id=%s", project_id)
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"MinIO upload failed: {exc.code}",
-            ) from exc
-        uploaded_storage_key = storage_key
-        file_record = FileRecord(
-            file_hash=file_hash,
-            storage_bucket=storage.bucket,
-            storage_key=storage_key,
-            file_size=len(file_content),
-            content_type=content_type,
-            extension=extension,
-        )
-        created_new_file = True
-    else:
-        try:
-            repaired_storage_key = _repair_missing_object_if_needed(
-                file_record=file_record,
-                storage=storage,
-                file_content=file_content,
-                content_type=content_type,
-                extension=extension,
-            )
-        except S3Error as exc:
-            logger.exception("Failed to verify/repair MinIO object for existing file_id=%s", file_record.id)
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"MinIO check failed: {exc.code}",
-            ) from exc
-        if repaired_storage_key is not None:
-            repaired_existing_file = True
-            uploaded_storage_key = repaired_storage_key
-            logger.info("Repaired missing MinIO object for file_id=%s", file_record.id)
-        else:
-            logger.info("Reusing existing file_id=%s for hash=%s", file_record.id, file_hash)
-
-    document = Document(
-        file_id=file_record.id,
+    document = await upload_document_with_dedupe(
+        session=session,
+        storage=storage,
         project_id=project_id,
         software_id=software_id,
-        name=document_name,
+        name=name,
         description=description,
-        extra_info=parsed_extra_info,
+        extra_info=extra_info,
+        upload_file=file,
     )
-
-    try:
-        if created_new_file:
-            session.add(file_record)
-            try:
-                session.flush()
-            except IntegrityError:
-                # Handle concurrent dedupe race: another request inserted the same hash first.
-                session.rollback()
-                if uploaded_storage_key is not None:
-                    _cleanup_uploaded_object(storage, uploaded_storage_key)
-                existing_file = _find_file_by_hash(file_hash, session)
-                if existing_file is None:
-                    logger.exception("File hash conflict but existing file not found, hash=%s", file_hash)
-                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="File dedupe conflict, please retry")
-                file_record = existing_file
-                document.file_id = file_record.id
-        elif repaired_existing_file:
-            session.add(file_record)
-
-        session.add(document)
-        session.commit()
-        session.refresh(document)
-    except IntegrityError as exc:
-        session.rollback()
-        if uploaded_storage_key is not None:
-            _cleanup_uploaded_object(storage, uploaded_storage_key)
-        logger.exception("Failed to create document record for project_id=%s", project_id)
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Document create conflict") from exc
 
     logger.info(
         "Document uploaded successfully, document_id=%s, file_id=%s, project_id=%s",
@@ -305,13 +158,14 @@ def download_document(
 
     file_record = get_file_or_404(document.file_id, session)
     try:
-        payload = storage.download_bytes(file_record.storage_key)
+        payload = storage.download_bytes(file_record.storage_key, bucket=file_record.storage_bucket)
     except S3Error as exc:
         if exc.code in {"NoSuchKey", "NoSuchBucket", "NoSuchObject"}:
             logger.warning(
-                "Document file object missing in MinIO, document_id=%s, file_id=%s, storage_key=%s",
+                "Document file object missing in MinIO, document_id=%s, file_id=%s, storage_bucket=%s, storage_key=%s",
                 document_id,
                 file_record.id,
+                file_record.storage_bucket,
                 file_record.storage_key,
             )
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File object not found in storage") from exc

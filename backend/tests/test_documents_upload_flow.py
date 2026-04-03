@@ -20,6 +20,12 @@ class _UploadFileStub:
         return self._content
 
 
+class _StoredObjectRef:
+    def __init__(self, *, bucket: str, storage_key: str):
+        self.bucket = bucket
+        self.storage_key = storage_key
+
+
 class _StorageStub:
     def __init__(
         self,
@@ -28,30 +34,39 @@ class _StorageStub:
         download_payload: bytes = b"",
         download_error: S3Error | None = None,
     ):
-        self.bucket = "softplan"
+        self.bucket = "softplan-documents"
+        self.documents_bucket = "softplan-documents"
+        self.images_bucket = "softplan-images"
         self.object_exists_result = object_exists_result
         self.download_payload = download_payload
         self.download_error = download_error
         self.upload_calls = []
+        self.upload_document_calls = []
         self.removed = []
         self.exists_calls = []
         self.download_calls = []
 
-    def upload_bytes(self, payload: bytes, *, content_type: str, extension: str = "") -> str:
+    def upload_bytes(self, payload: bytes, *, content_type: str, extension: str = "", bucket: str | None = None) -> str:
         self.upload_calls.append(
-            {"payload": payload, "content_type": content_type, "extension": extension}
+            {"payload": payload, "content_type": content_type, "extension": extension, "bucket": bucket}
         )
         return "upload/key.pdf"
 
-    def remove_object(self, storage_key: str) -> None:
-        self.removed.append(storage_key)
+    def upload_document_bytes(self, payload: bytes, *, content_type: str, extension: str = "") -> _StoredObjectRef:
+        self.upload_document_calls.append(
+            {"payload": payload, "content_type": content_type, "extension": extension}
+        )
+        return _StoredObjectRef(bucket=self.documents_bucket, storage_key="documents/2026/04/upload-key.pdf")
 
-    def object_exists(self, storage_key: str) -> bool:
-        self.exists_calls.append(storage_key)
+    def remove_object(self, storage_key: str, *, bucket: str | None = None) -> None:
+        self.removed.append({"storage_key": storage_key, "bucket": bucket})
+
+    def object_exists(self, storage_key: str, *, bucket: str | None = None) -> bool:
+        self.exists_calls.append({"storage_key": storage_key, "bucket": bucket})
         return self.object_exists_result
 
-    def download_bytes(self, storage_key: str) -> bytes:
-        self.download_calls.append(storage_key)
+    def download_bytes(self, storage_key: str, *, bucket: str | None = None) -> bytes:
+        self.download_calls.append({"storage_key": storage_key, "bucket": bucket})
         if self.download_error is not None:
             raise self.download_error
         return self.download_payload
@@ -123,8 +138,9 @@ class DocumentsUploadFlowTests(TestCase):
         self.assertIsInstance(session.added[0], FileRecord)
         self.assertEqual(session.added[1].file_id, session.added[0].id)
         self.assertEqual(created_document.file_id, session.added[0].id)
-        self.assertEqual(storage.upload_calls[0]["extension"], ".pdf")
+        self.assertEqual(storage.upload_document_calls[0]["extension"], ".pdf")
         self.assertEqual(created_document.name, "requirements.pdf")
+        self.assertEqual(session.added[0].storage_bucket, "softplan-documents")
         self.assertTrue(session.flushed)
         self.assertTrue(session.committed)
 
@@ -161,8 +177,8 @@ class DocumentsUploadFlowTests(TestCase):
 
         self.assertEqual(len(session.added), 1)
         self.assertEqual(created_document.file_id, existing_file.id)
-        self.assertEqual(storage.upload_calls, [])
-        self.assertEqual(storage.exists_calls, [existing_file.storage_key])
+        self.assertEqual(storage.upload_document_calls, [])
+        self.assertEqual(storage.exists_calls, [{"storage_key": existing_file.storage_key, "bucket": existing_file.storage_bucket}])
         self.assertFalse(session.flushed)
         self.assertTrue(session.committed)
 
@@ -197,9 +213,9 @@ class DocumentsUploadFlowTests(TestCase):
                 )
             )
 
-        self.assertEqual(len(storage.upload_calls), 1)
-        self.assertEqual(existing_file.storage_key, "upload/key.pdf")
-        self.assertEqual(existing_file.storage_bucket, "softplan")
+        self.assertEqual(len(storage.upload_document_calls), 1)
+        self.assertEqual(existing_file.storage_key, "documents/2026/04/upload-key.pdf")
+        self.assertEqual(existing_file.storage_bucket, "softplan-documents")
         self.assertEqual(len(session.added), 2)
         self.assertEqual(created_document.file_id, existing_file.id)
         self.assertTrue(session.committed)
@@ -225,7 +241,7 @@ class DocumentsUploadFlowTests(TestCase):
                 )
 
         self.assertEqual(ctx.exception.status_code, 422)
-        self.assertEqual(storage.upload_calls, [])
+        self.assertEqual(storage.upload_document_calls, [])
 
 
 class DocumentsCreateTests(TestCase):
@@ -267,7 +283,10 @@ class DocumentsDownloadTests(TestCase):
         self.assertEqual(response.media_type, "application/pdf")
         self.assertIn("attachment;", response.headers["content-disposition"])
         self.assertIn("requirements.pdf", response.headers["content-disposition"])
-        self.assertEqual(storage.download_calls, ["doc/key.pdf"])
+        self.assertEqual(
+            storage.download_calls,
+            [{"storage_key": "doc/key.pdf", "bucket": "softplan"}],
+        )
 
     def test_download_document_without_file_id_returns_404(self):
         document = Document(project_id=uuid4(), file_id=None, name="only-meta")
@@ -302,4 +321,7 @@ class DocumentsDownloadTests(TestCase):
                     documents.download_document(document_id=document.id, session=session, storage=storage)
 
         self.assertEqual(ctx.exception.status_code, 404)
-        self.assertEqual(storage.download_calls, ["missing/key.pdf"])
+        self.assertEqual(
+            storage.download_calls,
+            [{"storage_key": "missing/key.pdf", "bucket": "softplan"}],
+        )
