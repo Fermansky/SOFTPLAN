@@ -2,8 +2,9 @@ import hashlib
 import io
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -22,9 +23,23 @@ _DEFAULT_IMAGE_ENCODING = ("PNG", "image/png")
 
 
 @dataclass(frozen=True)
+class UploadedImageMetadata:
+    source_key: str
+    file_hash: str
+    storage_bucket: str
+    storage_key: str
+    file_size: int
+    content_type: str
+    extension: str | None
+    width: int | None
+    height: int | None
+
+
+@dataclass(frozen=True)
 class PdfMarkdownConvertResult:
     markdown: str
     image_hashes: dict[str, str]
+    uploaded_images: list[UploadedImageMetadata] = field(default_factory=list)
 
 
 class MarkerPdfToMarkdownConverter:
@@ -73,24 +88,55 @@ class MarkerPdfToMarkdownConverter:
             payload = self._serialize_image(image, image_format="PNG")
             return payload, "image/png"
 
-    def _upload_rendered_images(self, images: dict[Any, Any] | None) -> dict[str, str]:
+    def _coerce_optional_int(self, value: Any) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _upload_rendered_images(self, images: dict[Any, Any] | None) -> tuple[dict[str, str], list[UploadedImageMetadata]]:
         if not images:
-            return {}
+            return {}, []
 
         image_hashes: dict[str, str] = {}
+        uploaded_images: list[UploadedImageMetadata] = []
         for image_key, image in images.items():
             normalized_key = str(image_key)
             payload, content_type = self._serialize_with_fallback(image, image_key=normalized_key)
-            self._image_uploader(payload, content_type=content_type)
-            image_hashes[normalized_key] = hashlib.sha256(payload).hexdigest()
-        return image_hashes
+            storage_ref = self._image_uploader(payload, content_type=content_type)
+            payload_hash = hashlib.sha256(payload).hexdigest()
+            extension = Path(storage_ref.storage_key).suffix.lower() or None
+
+            image_hashes[normalized_key] = payload_hash
+            uploaded_images.append(
+                UploadedImageMetadata(
+                    source_key=normalized_key,
+                    file_hash=payload_hash,
+                    storage_bucket=storage_ref.bucket,
+                    storage_key=storage_ref.storage_key,
+                    file_size=len(payload),
+                    content_type=content_type,
+                    extension=extension,
+                    width=self._coerce_optional_int(getattr(image, "width", None)),
+                    height=self._coerce_optional_int(getattr(image, "height", None)),
+                )
+            )
+        return image_hashes, uploaded_images
 
     def convert(self, payload: bytes) -> PdfMarkdownConvertResult:
         pdf_stream = io.BytesIO(payload)
         rendered = self._pdf_converter(pdf_stream)
         text, _, images = self._text_from_rendered(rendered)
-        image_hashes = self._upload_rendered_images(images)
-        return PdfMarkdownConvertResult(markdown=text, image_hashes=image_hashes)
+        image_hashes, uploaded_images = self._upload_rendered_images(images)
+        return PdfMarkdownConvertResult(
+            markdown=text,
+            image_hashes=image_hashes,
+            uploaded_images=uploaded_images,
+        )
 
 
 @lru_cache(maxsize=1)

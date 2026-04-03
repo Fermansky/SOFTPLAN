@@ -12,6 +12,10 @@ from ..dependencies import (
 )
 from ...database import get_session
 from ...services import FileConvertServiceClient
+from ...services.extracted_image_persistence_service import (
+    ExtractedImagePersistenceError,
+    persist_extracted_images,
+)
 
 router = APIRouter(prefix="/converters", tags=["converters"])
 logger = logging.getLogger(__name__)
@@ -82,6 +86,20 @@ def convert_pdf_to_markdown(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"file-convert-service convert failed: {error}",
         )
+
+    if convert_result is not None:
+        try:
+            persist_extracted_images(session, uploaded_images=convert_result.uploaded_images)
+        except ExtractedImagePersistenceError as exc:
+            logger.exception(
+                "Failed to persist extracted images after convert, document_id=%s, storage_key=%s",
+                payload.document_id,
+                file_record.storage_key,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to persist extracted images",
+            ) from exc
 
     return PdfToMarkdownConvertRead(
         document_id=document.id,

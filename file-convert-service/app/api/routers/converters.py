@@ -15,10 +15,23 @@ class ConvertPdfToMarkdownRequest(BaseModel):
     storage_key: str
 
 
+class UploadedImageRead(BaseModel):
+    source_key: str
+    file_hash: str
+    storage_bucket: str
+    storage_key: str
+    file_size: int
+    content_type: str
+    extension: str | None = None
+    width: int | None = None
+    height: int | None = None
+
+
 class ConvertPdfToMarkdownRead(BaseModel):
     storage_key: str
     markdown: str
     image_hashes: dict[str, str] = Field(default_factory=dict)
+    uploaded_images: list[UploadedImageRead] = Field(default_factory=list)
 
 
 @router.post("/pdf-to-markdown", response_model=ConvertPdfToMarkdownRead)
@@ -61,4 +74,18 @@ def convert_pdf_to_markdown_from_storage(
         storage_key=storage_key,
         markdown=convert_result.markdown,
         image_hashes=convert_result.image_hashes,
+        uploaded_images=[
+            UploadedImageRead(
+                source_key=item.source_key,
+                file_hash=item.file_hash,
+                storage_bucket=item.storage_bucket,
+                storage_key=item.storage_key,
+                file_size=item.file_size,
+                content_type=item.content_type,
+                extension=item.extension,
+                width=item.width,
+                height=item.height,
+            )
+            for item in convert_result.uploaded_images
+        ],
     )

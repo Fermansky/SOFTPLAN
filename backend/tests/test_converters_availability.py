@@ -7,7 +7,11 @@ from fastapi import HTTPException
 
 from backend.app.api.routers import converters
 from backend.app.models import Document, FileRecord
-from backend.app.services.file_convert_service import FileConvertServiceClient, PdfToMarkdownResult
+from backend.app.services.file_convert_service import (
+    FileConvertServiceClient,
+    PdfToMarkdownResult,
+    UploadedImageMetadata,
+)
 
 
 class _ResponseStub:
@@ -35,12 +39,14 @@ class _ClientStub:
         availability_error: str | None = None,
         markdown: str | None = None,
         image_hashes: dict[str, str] | None = None,
+        uploaded_images: list[UploadedImageMetadata] | None = None,
         convert_error: str | None = None,
     ):
         self.available = available
         self.availability_error = availability_error
         self.markdown = markdown
         self.image_hashes = image_hashes or {}
+        self.uploaded_images = uploaded_images or []
         self.convert_error = convert_error
 
     def check_availability(self) -> tuple[bool, str | None]:
@@ -49,7 +55,11 @@ class _ClientStub:
     def convert_pdf_to_markdown(self, *, storage_key: str) -> tuple[PdfToMarkdownResult | None, str | None]:
         if self.convert_error is not None:
             return None, self.convert_error
-        return PdfToMarkdownResult(markdown=self.markdown or "", image_hashes=self.image_hashes), None
+        return PdfToMarkdownResult(
+            markdown=self.markdown or "",
+            image_hashes=self.image_hashes,
+            uploaded_images=self.uploaded_images,
+        ), None
 
 
 class FileConvertServiceClientTests(TestCase):
@@ -74,7 +84,7 @@ class FileConvertServiceClientTests(TestCase):
         self.assertFalse(available)
         self.assertIn("timed out", error or "")
 
-    def test_convert_pdf_to_markdown_returns_markdown_and_image_hashes_on_success(self):
+    def test_convert_pdf_to_markdown_parses_uploaded_images_on_success(self):
         client = FileConvertServiceClient(base_url="http://file-convert-service:8000", convert_timeout_seconds=60)
 
         with patch(
@@ -84,6 +94,19 @@ class FileConvertServiceClientTests(TestCase):
                     "storage_key": "a.pdf",
                     "markdown": "# hello",
                     "image_hashes": {"0": "abc123"},
+                    "uploaded_images": [
+                        {
+                            "source_key": "0",
+                            "file_hash": "abc123",
+                            "storage_bucket": "softplan",
+                            "storage_key": "images/abc123.png",
+                            "file_size": 321,
+                            "content_type": "image/png",
+                            "extension": ".png",
+                            "width": 100,
+                            "height": 200,
+                        }
+                    ],
                 }
             ),
         ):
@@ -92,9 +115,12 @@ class FileConvertServiceClientTests(TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.markdown, "# hello")
         self.assertEqual(result.image_hashes, {"0": "abc123"})
+        self.assertEqual(len(result.uploaded_images), 1)
+        self.assertEqual(result.uploaded_images[0].storage_key, "images/abc123.png")
+        self.assertEqual(result.uploaded_images[0].file_size, 321)
         self.assertIsNone(error)
 
-    def test_convert_pdf_to_markdown_defaults_image_hashes_to_empty_dict(self):
+    def test_convert_pdf_to_markdown_defaults_optional_fields(self):
         client = FileConvertServiceClient(base_url="http://file-convert-service:8000", convert_timeout_seconds=60)
 
         with patch(
@@ -105,6 +131,7 @@ class FileConvertServiceClientTests(TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result.image_hashes, {})
+        self.assertEqual(result.uploaded_images, [])
         self.assertIsNone(error)
 
     def test_convert_pdf_to_markdown_returns_error_on_http_error(self):
@@ -138,7 +165,49 @@ class ConvertersRouterTests(TestCase):
         self.assertEqual(response.service, "file-convert-service")
         self.assertEqual(response.error, "connection failed")
 
-    def test_convert_pdf_to_markdown_success(self):
+    def test_convert_pdf_to_markdown_success_persists_extracted_images(self):
+        document = Document(project_id=uuid4(), file_id=uuid4(), name="PRD")
+        file_record = FileRecord(
+            file_hash="hash",
+            storage_bucket="softplan",
+            storage_key="doc/a.pdf",
+            file_size=10,
+            content_type="application/pdf",
+            extension=".pdf",
+        )
+        uploaded_image = UploadedImageMetadata(
+            source_key="img-1",
+            file_hash="hash-1",
+            storage_bucket="softplan",
+            storage_key="images/hash-1.png",
+            file_size=123,
+            content_type="image/png",
+            extension=".png",
+            width=100,
+            height=200,
+        )
+
+        with patch.object(converters, "get_active_document_or_404", return_value=document):
+            with patch.object(converters, "get_file_or_404", return_value=file_record):
+                with patch.object(converters, "persist_extracted_images") as persist_mock:
+                    response = converters.convert_pdf_to_markdown(
+                        payload=converters.PdfToMarkdownConvertRequest(document_id=document.id),
+                        session=object(),
+                        client=_ClientStub(
+                            markdown="# content",
+                            image_hashes={"img-1": "hash-1"},
+                            uploaded_images=[uploaded_image],
+                        ),
+                    )
+
+        self.assertEqual(response.document_id, document.id)
+        self.assertEqual(response.storage_key, "doc/a.pdf")
+        self.assertEqual(response.markdown, "# content")
+        self.assertEqual(response.image_hashes, {"img-1": "hash-1"})
+        persist_mock.assert_called_once()
+        self.assertEqual(persist_mock.call_args.kwargs["uploaded_images"], [uploaded_image])
+
+    def test_convert_pdf_to_markdown_returns_500_when_persist_fails(self):
         document = Document(project_id=uuid4(), file_id=uuid4(), name="PRD")
         file_record = FileRecord(
             file_hash="hash",
@@ -151,16 +220,19 @@ class ConvertersRouterTests(TestCase):
 
         with patch.object(converters, "get_active_document_or_404", return_value=document):
             with patch.object(converters, "get_file_or_404", return_value=file_record):
-                response = converters.convert_pdf_to_markdown(
-                    payload=converters.PdfToMarkdownConvertRequest(document_id=document.id),
-                    session=object(),
-                    client=_ClientStub(markdown="# content", image_hashes={"img-1": "hash-1"}),
-                )
+                with patch.object(
+                    converters,
+                    "persist_extracted_images",
+                    side_effect=converters.ExtractedImagePersistenceError("failed"),
+                ):
+                    with self.assertRaises(HTTPException) as ctx:
+                        converters.convert_pdf_to_markdown(
+                            payload=converters.PdfToMarkdownConvertRequest(document_id=document.id),
+                            session=object(),
+                            client=_ClientStub(markdown="# content"),
+                        )
 
-        self.assertEqual(response.document_id, document.id)
-        self.assertEqual(response.storage_key, "doc/a.pdf")
-        self.assertEqual(response.markdown, "# content")
-        self.assertEqual(response.image_hashes, {"img-1": "hash-1"})
+        self.assertEqual(ctx.exception.status_code, 500)
 
     def test_convert_pdf_to_markdown_rejects_non_pdf(self):
         document = Document(project_id=uuid4(), file_id=uuid4(), name="PRD")
