@@ -1,5 +1,10 @@
-from .convert_task import ConvertTask, ConvertTaskCreate, ConvertTaskRead, ConvertTaskStatus
 from .document import Document, DocumentCreate, DocumentRead, DocumentUpdate
+from .document_parsing_task import (
+    DocumentParsingTask,
+    DocumentParsingTaskCreate,
+    DocumentParsingTaskRead,
+    DocumentParsingTaskStatus,
+)
 from .extracted_image import ExtractedImage, ExtractedImageCreate, ExtractedImageRead, ExtractedImageUpdate
 from .file_record import FileRecord, FileRecordCreate, FileRecordRead
 from .project import Project, ProjectCreate, ProjectRead, ProjectStatus, ProjectUpdate
@@ -12,14 +17,14 @@ from .project_software_relation import (
 from .software import Software, SoftwareCreate, SoftwareRead, SoftwareUpdate
 
 __all__ = [
-    "ConvertTask",
-    "ConvertTaskCreate",
-    "ConvertTaskRead",
-    "ConvertTaskStatus",
     "Document",
     "DocumentCreate",
     "DocumentRead",
     "DocumentUpdate",
+    "DocumentParsingTask",
+    "DocumentParsingTaskCreate",
+    "DocumentParsingTaskRead",
+    "DocumentParsingTaskStatus",
     "ExtractedImage",
     "ExtractedImageCreate",
     "ExtractedImageRead",

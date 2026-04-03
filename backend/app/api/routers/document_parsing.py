@@ -14,34 +14,34 @@ from ..dependencies import (
     get_file_or_404,
 )
 from ...database import get_session
-from ...models import ConvertTask, ConvertTaskStatus, FileRecord
+from ...models import DocumentParsingTask, DocumentParsingTaskStatus, FileRecord
 from ...services import FileConvertServiceClient
-from ...services.conversion_task_service import (
-    create_or_reuse_convert_task,
-    get_convert_task_by_id,
-    get_latest_convert_task_for_document_file,
+from ...services.document_parsing_task_service import (
+    create_or_reuse_document_parsing_task,
+    get_document_parsing_task_by_id,
+    get_latest_document_parsing_task_for_document_file,
 )
 from ...services.extracted_image_persistence_service import (
     ExtractedImagePersistenceError,
     persist_extracted_images,
 )
 
-router = APIRouter(prefix="/converters", tags=["converters"])
+router = APIRouter(prefix="/document-parsing", tags=["document-parsing"])
 logger = logging.getLogger(__name__)
 
 
-class ConverterAvailabilityRead(BaseModel):
+class DocumentParsingAvailabilityRead(BaseModel):
     available: bool
     service: str
     health_path: str | None = None
     error: str | None = None
 
 
-class PdfToMarkdownConvertRequest(BaseModel):
+class PdfToMarkdownParseRequest(BaseModel):
     document_id: UUID
 
 
-class PdfToMarkdownConvertRead(BaseModel):
+class PdfToMarkdownParseRead(BaseModel):
     document_id: UUID
     storage_key: str
     markdown: str
@@ -58,7 +58,7 @@ class PdfToMarkdownTaskRead(BaseModel):
     file_id: UUID
     storage_bucket: str
     storage_key: str
-    status: ConvertTaskStatus
+    status: DocumentParsingTaskStatus
     attempt_count: int
     reused: bool = False
     markdown: str | None = None
@@ -105,7 +105,7 @@ def _resolve_pdf_file_record(document_id: UUID, session: Session) -> tuple[UUID,
     return document.id, file_record
 
 
-def _to_task_read(task: ConvertTask, *, reused: bool = False) -> PdfToMarkdownTaskRead:
+def _to_task_read(task: DocumentParsingTask, *, reused: bool = False) -> PdfToMarkdownTaskRead:
     return PdfToMarkdownTaskRead(
         id=task.id,
         document_id=task.document_id,
@@ -125,21 +125,21 @@ def _to_task_read(task: ConvertTask, *, reused: bool = False) -> PdfToMarkdownTa
     )
 
 
-@router.get("/availability", response_model=ConverterAvailabilityRead)
-def get_converter_availability(
+@router.get("/availability", response_model=DocumentParsingAvailabilityRead)
+def get_document_parsing_availability(
     client: FileConvertServiceClient = Depends(get_file_convert_service_client),
-) -> ConverterAvailabilityRead:
+) -> DocumentParsingAvailabilityRead:
     logger.info("Checking file-convert-service availability")
     available, error = client.check_availability()
     if available:
-        return ConverterAvailabilityRead(
+        return DocumentParsingAvailabilityRead(
             available=True,
             service="file-convert-service",
             health_path="/health",
         )
 
     logger.warning("file-convert-service is unavailable: %s", error)
-    return ConverterAvailabilityRead(
+    return DocumentParsingAvailabilityRead(
         available=False,
         service="file-convert-service",
         error=error,
@@ -154,7 +154,7 @@ def create_pdf_to_markdown_task(
     document_id, file_record = _resolve_pdf_file_record(payload.document_id, session)
 
     try:
-        submission = create_or_reuse_convert_task(
+        submission = create_or_reuse_document_parsing_task(
             session,
             document_id=document_id,
             file_id=file_record.id,
@@ -163,17 +163,17 @@ def create_pdf_to_markdown_task(
         )
     except IntegrityError as exc:
         session.rollback()
-        logger.exception("Failed to create convert task, document_id=%s", payload.document_id)
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Convert task conflict") from exc
+        logger.exception("Failed to create document parsing task, document_id=%s", payload.document_id)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="document parsing task conflict") from exc
 
     return _to_task_read(submission.task, reused=submission.reused)
 
 
 @router.get("/pdf-to-markdown/tasks/{task_id}", response_model=PdfToMarkdownTaskRead)
 def get_pdf_to_markdown_task(task_id: UUID, session: Session = Depends(get_session)) -> PdfToMarkdownTaskRead:
-    task = get_convert_task_by_id(session, task_id=task_id)
+    task = get_document_parsing_task_by_id(session, task_id=task_id)
     if task is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Convert task not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document parsing task not found")
     return _to_task_read(task)
 
 
@@ -184,7 +184,7 @@ def get_pdf_to_markdown_document_result(
 ) -> PdfToMarkdownDocumentResultRead:
     resolved_document_id, file_record = _resolve_pdf_file_record(document_id, session)
 
-    task = get_latest_convert_task_for_document_file(
+    task = get_latest_document_parsing_task_for_document_file(
         session,
         document_id=resolved_document_id,
         file_id=file_record.id,
@@ -205,9 +205,9 @@ def get_pdf_to_markdown_document_result(
         status=result_status,
         task_id=task.id,
         storage_key=task.storage_key,
-        markdown=task.markdown if task.status == ConvertTaskStatus.succeeded else None,
-        image_hashes=task.image_hashes if task.status == ConvertTaskStatus.succeeded else {},
-        error_message=task.error_message if task.status == ConvertTaskStatus.failed else None,
+        markdown=task.markdown if task.status == DocumentParsingTaskStatus.succeeded else None,
+        image_hashes=task.image_hashes if task.status == DocumentParsingTaskStatus.succeeded else {},
+        error_message=task.error_message if task.status == DocumentParsingTaskStatus.failed else None,
         created_at=task.created_at,
         started_at=task.started_at,
         finished_at=task.finished_at,
@@ -215,33 +215,33 @@ def get_pdf_to_markdown_document_result(
     )
 
 
-@router.post("/pdf-to-markdown", response_model=PdfToMarkdownConvertRead)
-def convert_pdf_to_markdown(
-    payload: PdfToMarkdownConvertRequest,
+@router.post("/pdf-to-markdown", response_model=PdfToMarkdownParseRead)
+def parse_pdf_to_markdown(
+    payload: PdfToMarkdownParseRequest,
     session: Session = Depends(get_session),
     client: FileConvertServiceClient = Depends(get_file_convert_service_client),
-) -> PdfToMarkdownConvertRead:
+) -> PdfToMarkdownParseRead:
     document_id, file_record = _resolve_pdf_file_record(payload.document_id, session)
 
-    convert_result, error = client.convert_pdf_to_markdown(storage_key=file_record.storage_key)
+    parsing_result, error = client.convert_pdf_to_markdown(storage_key=file_record.storage_key)
     if error is not None:
         logger.warning(
-            "file-convert-service convert failed, document_id=%s, storage_key=%s, error=%s",
+            "file-convert-service parsing failed, document_id=%s, storage_key=%s, error=%s",
             payload.document_id,
             file_record.storage_key,
             error,
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"file-convert-service convert failed: {error}",
+            detail=f"file-convert-service parsing failed: {error}",
         )
 
-    if convert_result is not None:
+    if parsing_result is not None:
         try:
-            persist_extracted_images(session, uploaded_images=convert_result.uploaded_images)
+            persist_extracted_images(session, uploaded_images=parsing_result.uploaded_images)
         except ExtractedImagePersistenceError as exc:
             logger.exception(
-                "Failed to persist extracted images after convert, document_id=%s, storage_key=%s",
+                "Failed to persist extracted images after document parsing, document_id=%s, storage_key=%s",
                 payload.document_id,
                 file_record.storage_key,
             )
@@ -250,9 +250,9 @@ def convert_pdf_to_markdown(
                 detail="Failed to persist extracted images",
             ) from exc
 
-    return PdfToMarkdownConvertRead(
+    return PdfToMarkdownParseRead(
         document_id=document_id,
         storage_key=file_record.storage_key,
-        markdown=convert_result.markdown if convert_result is not None else "",
-        image_hashes=convert_result.image_hashes if convert_result is not None else {},
+        markdown=parsing_result.markdown if parsing_result is not None else "",
+        image_hashes=parsing_result.image_hashes if parsing_result is not None else {},
     )
