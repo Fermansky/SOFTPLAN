@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime
+from enum import Enum
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -18,6 +19,7 @@ from ...services import FileConvertServiceClient
 from ...services.conversion_task_service import (
     create_or_reuse_convert_task,
     get_convert_task_by_id,
+    get_latest_convert_task_for_document_file,
 )
 from ...services.extracted_image_persistence_service import (
     ExtractedImagePersistenceError,
@@ -66,6 +68,29 @@ class PdfToMarkdownTaskRead(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     updated_at: datetime
+
+
+class PdfToMarkdownDocumentResultStatus(str, Enum):
+    no_task = "no_task"
+    pending = "pending"
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+
+
+class PdfToMarkdownDocumentResultRead(BaseModel):
+    document_id: UUID
+    file_id: UUID
+    status: PdfToMarkdownDocumentResultStatus
+    task_id: UUID | None = None
+    storage_key: str | None = None
+    markdown: str | None = None
+    image_hashes: dict[str, str] = Field(default_factory=dict)
+    error_message: str | None = None
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 def _resolve_pdf_file_record(document_id: UUID, session: Session) -> tuple[UUID, FileRecord]:
@@ -150,6 +175,44 @@ def get_pdf_to_markdown_task(task_id: UUID, session: Session = Depends(get_sessi
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Convert task not found")
     return _to_task_read(task)
+
+
+@router.get("/pdf-to-markdown/results/{document_id}", response_model=PdfToMarkdownDocumentResultRead)
+def get_pdf_to_markdown_document_result(
+    document_id: UUID,
+    session: Session = Depends(get_session),
+) -> PdfToMarkdownDocumentResultRead:
+    resolved_document_id, file_record = _resolve_pdf_file_record(document_id, session)
+
+    task = get_latest_convert_task_for_document_file(
+        session,
+        document_id=resolved_document_id,
+        file_id=file_record.id,
+    )
+    if task is None:
+        return PdfToMarkdownDocumentResultRead(
+            document_id=resolved_document_id,
+            file_id=file_record.id,
+            status=PdfToMarkdownDocumentResultStatus.no_task,
+            storage_key=file_record.storage_key,
+            image_hashes={},
+        )
+
+    result_status = PdfToMarkdownDocumentResultStatus(task.status.value)
+    return PdfToMarkdownDocumentResultRead(
+        document_id=resolved_document_id,
+        file_id=file_record.id,
+        status=result_status,
+        task_id=task.id,
+        storage_key=task.storage_key,
+        markdown=task.markdown if task.status == ConvertTaskStatus.succeeded else None,
+        image_hashes=task.image_hashes if task.status == ConvertTaskStatus.succeeded else {},
+        error_message=task.error_message if task.status == ConvertTaskStatus.failed else None,
+        created_at=task.created_at,
+        started_at=task.started_at,
+        finished_at=task.finished_at,
+        updated_at=task.updated_at,
+    )
 
 
 @router.post("/pdf-to-markdown", response_model=PdfToMarkdownConvertRead)

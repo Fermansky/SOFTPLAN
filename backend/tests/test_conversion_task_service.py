@@ -25,8 +25,10 @@ class _SessionStub:
         self.committed = False
         self.rolled_back = False
         self.refreshed = []
+        self.last_statement = None
 
     def exec(self, statement):
+        self.last_statement = statement
         return _ExecResult(self._existing_task)
 
     def add(self, item):
@@ -131,3 +133,26 @@ class ConversionTaskServiceTests(TestCase):
         self.assertTrue(result.reused)
         self.assertEqual(result.task, existing)
         self.assertTrue(session.rolled_back)
+
+    def test_get_latest_convert_task_for_document_file_filters_by_document_and_file(self):
+        document_id = uuid4()
+        file_id = uuid4()
+        task = ConvertTask(
+            document_id=document_id,
+            file_id=file_id,
+            storage_bucket="softplan",
+            storage_key="documents/2026/04/a.pdf",
+            status=ConvertTaskStatus.succeeded,
+        )
+        session = _SessionStub(existing_task=task)
+
+        result = service.get_latest_convert_task_for_document_file(
+            session,
+            document_id=document_id,
+            file_id=file_id,
+        )
+
+        self.assertEqual(result, task)
+        self.assertIn("convert_tasks.document_id", str(session.last_statement.whereclause))
+        self.assertIn("convert_tasks.file_id", str(session.last_statement.whereclause))
+        self.assertIn("ORDER BY convert_tasks.created_at DESC", str(session.last_statement))

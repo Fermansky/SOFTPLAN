@@ -79,6 +79,23 @@ def get_convert_task_by_id(session: Session, *, task_id: UUID) -> ConvertTask | 
     return session.exec(statement).first()
 
 
+def get_latest_convert_task_for_document_file(
+    session: Session,
+    *,
+    document_id: UUID,
+    file_id: UUID,
+) -> ConvertTask | None:
+    statement = (
+        select(ConvertTask)
+        .where(
+            ConvertTask.document_id == document_id,
+            ConvertTask.file_id == file_id,
+        )
+        .order_by(ConvertTask.created_at.desc())
+    )
+    return session.exec(statement).first()
+
+
 def _mark_task_failed(session: Session, *, task: ConvertTask, error_message: str) -> None:
     now = utc_now()
     task.status = ConvertTaskStatus.failed
@@ -256,4 +273,3 @@ def get_conversion_task_worker() -> ConversionTaskWorker:
 def is_conversion_task_worker_enabled() -> bool:
     value = os.getenv("CONVERSION_TASK_WORKER_ENABLED")
     return _to_bool(value, default=True)
-
