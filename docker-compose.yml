@@ -22,8 +22,6 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-softplan}
-      MINIO_BUCKET_DOCUMENTS: ${MINIO_BUCKET_DOCUMENTS:-softplan-documents}
-      MINIO_BUCKET_IMAGES: ${MINIO_BUCKET_IMAGES:-softplan-images}
       FILE_CONVERT_SERVICE_BASE_URL: http://file-convert-service:8000
     depends_on:
       postgres:
@@ -44,8 +42,6 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-softplan}
-      MINIO_BUCKET_DOCUMENTS: ${MINIO_BUCKET_DOCUMENTS:-softplan-documents}
-      MINIO_BUCKET_IMAGES: ${MINIO_BUCKET_IMAGES:-softplan-images}
       HF_HOME: /data/huggingface
       HF_HUB_CACHE: /data/huggingface/hub
       MODEL_CACHE_DIR: /data/datalab/models

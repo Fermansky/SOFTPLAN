@@ -34,9 +34,7 @@ class _StorageStub:
         download_payload: bytes = b"",
         download_error: S3Error | None = None,
     ):
-        self.bucket = "softplan-documents"
-        self.documents_bucket = "softplan-documents"
-        self.images_bucket = "softplan-images"
+        self.bucket = "softplan"
         self.object_exists_result = object_exists_result
         self.download_payload = download_payload
         self.download_error = download_error
@@ -56,7 +54,7 @@ class _StorageStub:
         self.upload_document_calls.append(
             {"payload": payload, "content_type": content_type, "extension": extension}
         )
-        return _StoredObjectRef(bucket=self.documents_bucket, storage_key="documents/2026/04/upload-key.pdf")
+        return _StoredObjectRef(bucket=self.bucket, storage_key="documents/2026/04/upload-key.pdf")
 
     def remove_object(self, storage_key: str, *, bucket: str | None = None) -> None:
         self.removed.append({"storage_key": storage_key, "bucket": bucket})
@@ -140,7 +138,7 @@ class DocumentsUploadFlowTests(TestCase):
         self.assertEqual(created_document.file_id, session.added[0].id)
         self.assertEqual(storage.upload_document_calls[0]["extension"], ".pdf")
         self.assertEqual(created_document.name, "requirements.pdf")
-        self.assertEqual(session.added[0].storage_bucket, "softplan-documents")
+        self.assertEqual(session.added[0].storage_bucket, "softplan")
         self.assertTrue(session.flushed)
         self.assertTrue(session.committed)
 
@@ -215,7 +213,7 @@ class DocumentsUploadFlowTests(TestCase):
 
         self.assertEqual(len(storage.upload_document_calls), 1)
         self.assertEqual(existing_file.storage_key, "documents/2026/04/upload-key.pdf")
-        self.assertEqual(existing_file.storage_bucket, "softplan-documents")
+        self.assertEqual(existing_file.storage_bucket, "softplan")
         self.assertEqual(len(session.added), 2)
         self.assertEqual(created_document.file_id, existing_file.id)
         self.assertTrue(session.committed)

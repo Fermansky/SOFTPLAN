@@ -73,21 +73,6 @@ def _cleanup_uploaded_object(storage: MinioStorage, storage_ref: StoredObjectRef
         )
 
 
-def _ensure_documents_bucket(storage_ref: StoredObjectRef, storage: MinioStorage) -> None:
-    if storage_ref.bucket == storage.documents_bucket:
-        return
-    logger.error(
-        "Unexpected upload bucket for document object, expected=%s, actual=%s, storage_key=%s",
-        storage.documents_bucket,
-        storage_ref.bucket,
-        storage_ref.storage_key,
-    )
-    raise HTTPException(
-        status_code=status.HTTP_502_BAD_GATEWAY,
-        detail="MinIO upload failed: unexpected document storage bucket",
-    )
-
-
 async def prepare_upload_input(
     *,
     name: str | None,
@@ -135,7 +120,6 @@ def _repair_missing_object_if_needed(
         content_type=upload_input.content_type,
         extension=upload_input.extension,
     )
-    _ensure_documents_bucket(repaired_storage_ref, storage)
 
     file_record.storage_bucket = repaired_storage_ref.bucket
     file_record.storage_key = repaired_storage_ref.storage_key
@@ -167,7 +151,6 @@ def resolve_file_record(
                 detail=f"MinIO upload failed: {exc.code}",
             ) from exc
 
-        _ensure_documents_bucket(uploaded_storage_ref, storage)
         file_record = FileRecord(
             file_hash=upload_input.file_hash,
             storage_bucket=uploaded_storage_ref.bucket,

@@ -2,7 +2,6 @@ import asyncio
 from unittest import TestCase
 from uuid import uuid4
 
-from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.models import FileRecord
@@ -20,11 +19,9 @@ class _UploadFileStub:
 
 
 class _StorageStub:
-    def __init__(self, *, object_exists_result: bool = True, upload_bucket_override: str | None = None):
-        self.documents_bucket = "softplan-documents"
-        self.images_bucket = "softplan-images"
+    def __init__(self, *, object_exists_result: bool = True):
+        self.bucket = "softplan"
         self.object_exists_result = object_exists_result
-        self.upload_bucket_override = upload_bucket_override
         self.upload_document_calls = []
         self.exists_calls = []
         self.removed = []
@@ -33,8 +30,7 @@ class _StorageStub:
         self.upload_document_calls.append(
             {"payload": payload, "content_type": content_type, "extension": extension}
         )
-        upload_bucket = self.upload_bucket_override or self.documents_bucket
-        return service.StoredObjectRef(bucket=upload_bucket, storage_key="documents/2026/04/upload-key.pdf")
+        return service.StoredObjectRef(bucket=self.bucket, storage_key="documents/2026/04/upload-key.pdf")
 
     def object_exists(self, storage_key: str, *, bucket: str | None = None) -> bool:
         self.exists_calls.append({"storage_key": storage_key, "bucket": bucket})
@@ -85,7 +81,7 @@ class _SessionCapture:
 
 
 class DocumentUploadServiceTests(TestCase):
-    def test_upload_document_with_dedupe_new_upload_uses_documents_bucket(self):
+    def test_upload_document_with_dedupe_new_upload_uses_default_bucket(self):
         session = _SessionCapture(exec_first_values=[None])
         storage = _StorageStub(object_exists_result=True)
         upload_file = _UploadFileStub(b"hello", filename="requirements.pdf", content_type="application/pdf")
@@ -107,9 +103,9 @@ class DocumentUploadServiceTests(TestCase):
         self.assertEqual(len(storage.upload_document_calls), 1)
         self.assertEqual(storage.upload_document_calls[0]["extension"], ".pdf")
         self.assertIsNotNone(document.file_id)
-        self.assertEqual(session.added[0].storage_bucket, "softplan-documents")
+        self.assertEqual(session.added[0].storage_bucket, "softplan")
 
-    def test_upload_document_with_dedupe_repairs_missing_object_into_documents_bucket(self):
+    def test_upload_document_with_dedupe_repairs_missing_object_into_default_bucket(self):
         existing_file = FileRecord(
             file_hash="existing-hash",
             storage_bucket="legacy-bucket",
@@ -136,35 +132,13 @@ class DocumentUploadServiceTests(TestCase):
         )
 
         self.assertEqual(document.file_id, existing_file.id)
-        self.assertEqual(existing_file.storage_bucket, "softplan-documents")
+        self.assertEqual(existing_file.storage_bucket, "softplan")
         self.assertEqual(existing_file.storage_key, "documents/2026/04/upload-key.pdf")
-
-    def test_upload_document_with_dedupe_raises_when_upload_bucket_is_not_documents_bucket(self):
-        session = _SessionCapture(exec_first_values=[None])
-        storage = _StorageStub(object_exists_result=True, upload_bucket_override="wrong-bucket")
-        upload_file = _UploadFileStub(b"hello", filename="requirements.pdf", content_type="application/pdf")
-
-        with self.assertRaises(HTTPException) as ctx:
-            asyncio.run(
-                service.upload_document_with_dedupe(
-                    session=session,
-                    storage=storage,
-                    project_id=uuid4(),
-                    software_id=None,
-                    name=None,
-                    description="desc",
-                    extra_info=None,
-                    upload_file=upload_file,
-                )
-            )
-
-        self.assertEqual(ctx.exception.status_code, 502)
-        self.assertIn("unexpected document storage bucket", ctx.exception.detail)
 
     def test_upload_document_with_dedupe_cleans_up_on_flush_conflict(self):
         existing_file = FileRecord(
             file_hash="existing-hash",
-            storage_bucket="softplan-documents",
+            storage_bucket="softplan",
             storage_key="documents/2026/04/existing.pdf",
             file_size=10,
             content_type="application/pdf",
@@ -190,5 +164,5 @@ class DocumentUploadServiceTests(TestCase):
         self.assertEqual(document.file_id, existing_file.id)
         self.assertEqual(
             storage.removed,
-            [{"storage_key": "documents/2026/04/upload-key.pdf", "bucket": "softplan-documents"}],
+            [{"storage_key": "documents/2026/04/upload-key.pdf", "bucket": "softplan"}],
         )

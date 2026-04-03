@@ -16,9 +16,7 @@ The service uses these environment variables:
 - `MINIO_ENDPOINT` (default: `localhost:10000`)
 - `MINIO_ACCESS_KEY` or `MINIO_ROOT_USER`
 - `MINIO_SECRET_KEY` or `MINIO_ROOT_PASSWORD`
-- `MINIO_BUCKET_DOCUMENTS` (default: `softplan-documents`)
-- `MINIO_BUCKET_IMAGES` (default: `softplan-images`)
-- `MINIO_BUCKET` (legacy compatibility fallback)
+- `MINIO_BUCKET` (default: `softplan`)
 - `MINIO_SECURE` (default: `false`)
 
 ## Marker Dependency
@@ -28,7 +26,7 @@ The service uses these environment variables:
 ## Internal Service Functions
 
 - `app.services.upload_image_bytes(payload, content_type=...)`
-  - Uploads images to the image bucket with dedupe key format: `images/{sha256}{ext}`
+  - Uploads images to MinIO with dedupe key format: `images/{sha256}{ext}`
 
 ## Internal APIs
 

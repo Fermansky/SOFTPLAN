@@ -63,14 +63,10 @@ class MinioStorage:
         endpoint: str,
         access_key: str,
         secret_key: str,
-        documents_bucket: str,
-        images_bucket: str,
+        bucket: str,
         secure: bool = False,
     ) -> None:
-        self.documents_bucket = documents_bucket
-        self.images_bucket = images_bucket
-        # Keep this attribute for compatibility with existing internal APIs.
-        self.bucket = self.documents_bucket
+        self.bucket = bucket
         self.client = Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=secure)
 
     def _resolve_bucket(self, bucket: str | None) -> str:
@@ -103,7 +99,7 @@ class MinioStorage:
         return storage_key
 
     def upload_document_bytes(self, payload: bytes, *, content_type: str, extension: str = "") -> StoredObjectRef:
-        resolved_bucket = self.ensure_bucket(self.documents_bucket)
+        resolved_bucket = self.ensure_bucket()
         normalized_extension = _normalize_extension(extension)
         now = datetime.now(timezone.utc)
         storage_key = f"documents/{now:%Y/%m}/{uuid4()}{normalized_extension}"
@@ -117,7 +113,7 @@ class MinioStorage:
         return StoredObjectRef(bucket=resolved_bucket, storage_key=storage_key)
 
     def upload_image_bytes(self, payload: bytes, *, content_type: str) -> StoredObjectRef:
-        resolved_bucket = self.ensure_bucket(self.images_bucket)
+        resolved_bucket = self.ensure_bucket()
         extension = _normalize_image_extension(content_type)
         payload_hash = hashlib.sha256(payload).hexdigest()
         storage_key = f"images/{payload_hash}{extension}"
@@ -160,15 +156,12 @@ def get_minio_storage() -> MinioStorage:
     endpoint = os.getenv("MINIO_ENDPOINT", "localhost:10000")
     access_key = os.getenv("MINIO_ACCESS_KEY") or os.getenv("MINIO_ROOT_USER", "minioadmin")
     secret_key = os.getenv("MINIO_SECRET_KEY") or os.getenv("MINIO_ROOT_PASSWORD", "minioadmin")
-    legacy_bucket = os.getenv("MINIO_BUCKET")
-    documents_bucket = os.getenv("MINIO_BUCKET_DOCUMENTS") or legacy_bucket or "softplan-documents"
-    images_bucket = os.getenv("MINIO_BUCKET_IMAGES") or legacy_bucket or "softplan-images"
+    bucket = os.getenv("MINIO_BUCKET", "softplan")
     secure = _to_bool(os.getenv("MINIO_SECURE"), default=False)
     return MinioStorage(
         endpoint=endpoint,
         access_key=access_key,
         secret_key=secret_key,
-        documents_bucket=documents_bucket,
-        images_bucket=images_bucket,
+        bucket=bucket,
         secure=secure,
     )

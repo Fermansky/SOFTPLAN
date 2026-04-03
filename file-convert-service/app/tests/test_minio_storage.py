@@ -65,8 +65,7 @@ class MinioStorageImageUploadTests(TestCase):
                 endpoint="localhost:10000",
                 access_key="minioadmin",
                 secret_key="minioadmin",
-                documents_bucket="docs-bucket",
-                images_bucket="images-bucket",
+                bucket="softplan",
                 secure=False,
             )
 
@@ -76,8 +75,8 @@ class MinioStorageImageUploadTests(TestCase):
             first = storage.upload_image_bytes(payload, content_type="image/jpeg")
             second = storage.upload_image_bytes(payload, content_type="image/jpg")
 
-        self.assertEqual(first.bucket, "images-bucket")
-        self.assertEqual(second.bucket, "images-bucket")
+        self.assertEqual(first.bucket, "softplan")
+        self.assertEqual(second.bucket, "softplan")
         self.assertEqual(first.storage_key, f"images/{expected_hash}.jpg")
         self.assertEqual(second.storage_key, f"images/{expected_hash}.jpg")
         self.assertEqual(len(storage.client.put_calls), 1)
