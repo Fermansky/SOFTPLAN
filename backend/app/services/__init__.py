@@ -1,3 +1,8 @@
+from .conversion_task_service import (
+    ConvertTaskSubmissionResult,
+    get_conversion_task_worker,
+    is_conversion_task_worker_enabled,
+)
 from .document_upload_service import UploadFileResolution, upload_document_with_dedupe
 from .file_convert_service import (
     FileConvertServiceClient,
@@ -8,13 +13,16 @@ from .file_convert_service import (
 from .minio_storage import MinioStorage, StoredObjectRef, get_minio_storage
 
 __all__ = [
+    "ConvertTaskSubmissionResult",
     "FileConvertServiceClient",
     "MinioStorage",
     "PdfToMarkdownResult",
     "StoredObjectRef",
     "UploadedImageMetadata",
     "UploadFileResolution",
+    "get_conversion_task_worker",
     "get_file_convert_service_client",
     "get_minio_storage",
+    "is_conversion_task_worker_enabled",
     "upload_document_with_dedupe",
 ]

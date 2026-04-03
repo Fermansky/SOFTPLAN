@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 from uuid import uuid4
@@ -6,7 +7,7 @@ import httpx
 from fastapi import HTTPException
 
 from backend.app.api.routers import converters
-from backend.app.models import Document, FileRecord
+from backend.app.models import ConvertTask, ConvertTaskStatus, Document, FileRecord
 from backend.app.services.file_convert_service import (
     FileConvertServiceClient,
     PdfToMarkdownResult,
@@ -52,7 +53,12 @@ class _ClientStub:
     def check_availability(self) -> tuple[bool, str | None]:
         return self.available, self.availability_error
 
-    def convert_pdf_to_markdown(self, *, storage_key: str) -> tuple[PdfToMarkdownResult | None, str | None]:
+    def convert_pdf_to_markdown(
+        self,
+        *,
+        storage_key: str,
+        task_id: str | None = None,
+    ) -> tuple[PdfToMarkdownResult | None, str | None]:
         if self.convert_error is not None:
             return None, self.convert_error
         return PdfToMarkdownResult(
@@ -60,6 +66,14 @@ class _ClientStub:
             image_hashes=self.image_hashes,
             uploaded_images=self.uploaded_images,
         ), None
+
+
+class _SessionStub:
+    def __init__(self):
+        self.rolled_back = False
+
+    def rollback(self) -> None:
+        self.rolled_back = True
 
 
 class FileConvertServiceClientTests(TestCase):
@@ -120,6 +134,19 @@ class FileConvertServiceClientTests(TestCase):
         self.assertEqual(result.uploaded_images[0].file_size, 321)
         self.assertIsNone(error)
 
+    def test_convert_pdf_to_markdown_includes_task_id_header(self):
+        client = FileConvertServiceClient(base_url="http://file-convert-service:8000", convert_timeout_seconds=60)
+
+        with patch(
+            "backend.app.services.file_convert_service.httpx.post",
+            return_value=_ResponseStub({"storage_key": "a.pdf", "markdown": "# hello"}),
+        ) as post_mock:
+            result, error = client.convert_pdf_to_markdown(storage_key="a.pdf", task_id="task-1")
+
+        self.assertIsNotNone(result)
+        self.assertIsNone(error)
+        self.assertEqual(post_mock.call_args.kwargs["headers"], {"X-Convert-Task-Id": "task-1"})
+
     def test_convert_pdf_to_markdown_defaults_optional_fields(self):
         client = FileConvertServiceClient(base_url="http://file-convert-service:8000", convert_timeout_seconds=60)
 
@@ -165,6 +192,82 @@ class ConvertersRouterTests(TestCase):
         self.assertEqual(response.service, "file-convert-service")
         self.assertEqual(response.error, "connection failed")
 
+    def test_create_pdf_to_markdown_task_creates_pending_task(self):
+        document = Document(project_id=uuid4(), file_id=uuid4(), name="PRD")
+        file_record = FileRecord(
+            file_hash="hash",
+            storage_bucket="softplan",
+            storage_key="documents/2026/04/a.pdf",
+            file_size=10,
+            content_type="application/pdf",
+            extension=".pdf",
+        )
+        task = ConvertTask(
+            document_id=document.id,
+            file_id=file_record.id,
+            storage_bucket=file_record.storage_bucket,
+            storage_key=file_record.storage_key,
+            status=ConvertTaskStatus.pending,
+        )
+
+        with patch.object(converters, "get_active_document_or_404", return_value=document):
+            with patch.object(converters, "get_file_or_404", return_value=file_record):
+                with patch.object(
+                    converters,
+                    "create_or_reuse_convert_task",
+                    return_value=SimpleNamespace(task=task, reused=False),
+                ):
+                    response = converters.create_pdf_to_markdown_task(
+                        payload=converters.PdfToMarkdownTaskCreateRequest(document_id=document.id),
+                        session=_SessionStub(),
+                    )
+
+        self.assertEqual(response.id, task.id)
+        self.assertEqual(response.status, ConvertTaskStatus.pending)
+        self.assertFalse(response.reused)
+
+    def test_create_pdf_to_markdown_task_reuses_existing_task(self):
+        document = Document(project_id=uuid4(), file_id=uuid4(), name="PRD")
+        file_record = FileRecord(
+            file_hash="hash",
+            storage_bucket="softplan",
+            storage_key="documents/2026/04/a.pdf",
+            file_size=10,
+            content_type="application/pdf",
+            extension=".pdf",
+        )
+        task = ConvertTask(
+            document_id=document.id,
+            file_id=file_record.id,
+            storage_bucket=file_record.storage_bucket,
+            storage_key=file_record.storage_key,
+            status=ConvertTaskStatus.running,
+            attempt_count=1,
+        )
+
+        with patch.object(converters, "get_active_document_or_404", return_value=document):
+            with patch.object(converters, "get_file_or_404", return_value=file_record):
+                with patch.object(
+                    converters,
+                    "create_or_reuse_convert_task",
+                    return_value=SimpleNamespace(task=task, reused=True),
+                ):
+                    response = converters.create_pdf_to_markdown_task(
+                        payload=converters.PdfToMarkdownTaskCreateRequest(document_id=document.id),
+                        session=_SessionStub(),
+                    )
+
+        self.assertEqual(response.id, task.id)
+        self.assertEqual(response.status, ConvertTaskStatus.running)
+        self.assertTrue(response.reused)
+
+    def test_get_pdf_to_markdown_task_returns_404_when_missing(self):
+        with patch.object(converters, "get_convert_task_by_id", return_value=None):
+            with self.assertRaises(HTTPException) as ctx:
+                converters.get_pdf_to_markdown_task(task_id=uuid4(), session=_SessionStub())
+
+        self.assertEqual(ctx.exception.status_code, 404)
+
     def test_convert_pdf_to_markdown_success_persists_extracted_images(self):
         document = Document(project_id=uuid4(), file_id=uuid4(), name="PRD")
         file_record = FileRecord(
@@ -192,7 +295,7 @@ class ConvertersRouterTests(TestCase):
                 with patch.object(converters, "persist_extracted_images") as persist_mock:
                     response = converters.convert_pdf_to_markdown(
                         payload=converters.PdfToMarkdownConvertRequest(document_id=document.id),
-                        session=object(),
+                        session=_SessionStub(),
                         client=_ClientStub(
                             markdown="# content",
                             image_hashes={"img-1": "hash-1"},
@@ -228,7 +331,7 @@ class ConvertersRouterTests(TestCase):
                     with self.assertRaises(HTTPException) as ctx:
                         converters.convert_pdf_to_markdown(
                             payload=converters.PdfToMarkdownConvertRequest(document_id=document.id),
-                            session=object(),
+                            session=_SessionStub(),
                             client=_ClientStub(markdown="# content"),
                         )
 
@@ -250,7 +353,7 @@ class ConvertersRouterTests(TestCase):
                 with self.assertRaises(HTTPException) as ctx:
                     converters.convert_pdf_to_markdown(
                         payload=converters.PdfToMarkdownConvertRequest(document_id=document.id),
-                        session=object(),
+                        session=_SessionStub(),
                         client=_ClientStub(markdown="# content"),
                     )
 
@@ -272,7 +375,7 @@ class ConvertersRouterTests(TestCase):
                 with self.assertRaises(HTTPException) as ctx:
                     converters.convert_pdf_to_markdown(
                         payload=converters.PdfToMarkdownConvertRequest(document_id=document.id),
-                        session=object(),
+                        session=_SessionStub(),
                         client=_ClientStub(convert_error="convert failed"),
                     )
 

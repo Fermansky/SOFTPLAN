@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from minio.error import S3Error
 from pydantic import BaseModel, Field
 
@@ -37,9 +37,12 @@ class ConvertPdfToMarkdownRead(BaseModel):
 @router.post("/pdf-to-markdown", response_model=ConvertPdfToMarkdownRead)
 def convert_pdf_to_markdown_from_storage(
     payload: ConvertPdfToMarkdownRequest,
+    request: Request,
     storage: MinioStorage = Depends(get_minio_storage),
     converter: MarkerPdfToMarkdownConverter = Depends(get_marker_pdf_to_markdown_converter),
 ) -> ConvertPdfToMarkdownRead:
+    trace_task_id = request.headers.get("X-Convert-Task-Id")
+
     storage_key = payload.storage_key.strip()
     if not storage_key:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="storage_key is required")
@@ -49,10 +52,16 @@ def convert_pdf_to_markdown_from_storage(
     if not storage.object_exists(storage_key):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File object not found")
 
+    logger.info(
+        "Start PDF to markdown conversion, storage_key=%s, task_id=%s",
+        storage_key,
+        trace_task_id,
+    )
+
     try:
         pdf_payload = storage.download_bytes(storage_key)
     except S3Error as exc:
-        logger.exception("Failed to download PDF from MinIO, storage_key=%s", storage_key)
+        logger.exception("Failed to download PDF from MinIO, storage_key=%s, task_id=%s", storage_key, trace_task_id)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"MinIO download failed: {exc.code}",
@@ -61,14 +70,21 @@ def convert_pdf_to_markdown_from_storage(
     try:
         convert_result = converter.convert(pdf_payload)
     except RuntimeError as exc:
-        logger.exception("Marker converter is unavailable")
+        logger.exception("Marker converter is unavailable, task_id=%s", trace_task_id)
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except Exception as exc:
-        logger.exception("Failed to convert PDF to markdown, storage_key=%s", storage_key)
+        logger.exception("Failed to convert PDF to markdown, storage_key=%s, task_id=%s", storage_key, trace_task_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"PDF conversion failed: {exc}",
         ) from exc
+
+    logger.info(
+        "Finished PDF to markdown conversion, storage_key=%s, task_id=%s, images=%s",
+        storage_key,
+        trace_task_id,
+        len(convert_result.uploaded_images),
+    )
 
     return ConvertPdfToMarkdownRead(
         storage_key=storage_key,

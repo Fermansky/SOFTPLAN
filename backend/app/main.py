@@ -1,11 +1,12 @@
-import os
 import logging
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api import api_router
 from .database import create_db_and_tables
+from .services import get_conversion_task_worker, is_conversion_task_worker_enabled
 
 
 def configure_logging() -> None:
@@ -46,6 +47,19 @@ def create_app() -> FastAPI:
     )
 
     app.add_event_handler("startup", create_db_and_tables)
+
+    if is_conversion_task_worker_enabled():
+        worker = get_conversion_task_worker()
+
+        async def _start_conversion_task_worker() -> None:
+            await worker.start()
+
+        async def _stop_conversion_task_worker() -> None:
+            await worker.stop()
+
+        app.add_event_handler("startup", _start_conversion_task_worker)
+        app.add_event_handler("shutdown", _stop_conversion_task_worker)
+
     app.include_router(api_router)
     return app
 

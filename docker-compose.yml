@@ -23,6 +23,8 @@ services:
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-softplan}
       FILE_CONVERT_SERVICE_BASE_URL: http://file-convert-service:8000
+      CONVERSION_TASK_WORKER_ENABLED: ${CONVERSION_TASK_WORKER_ENABLED:-true}
+      CONVERSION_TASK_WORKER_POLL_INTERVAL_SECONDS: ${CONVERSION_TASK_WORKER_POLL_INTERVAL_SECONDS:-1.0}
     depends_on:
       postgres:
         condition: service_healthy
@@ -87,4 +89,3 @@ volumes:
   minio_data:
   file_convert_hf_cache:
   file_convert_datalab_cache:
-

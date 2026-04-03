@@ -112,12 +112,20 @@ class FileConvertServiceClient:
 
         return uploaded_images
 
-    def convert_pdf_to_markdown(self, *, storage_key: str) -> tuple[PdfToMarkdownResult | None, str | None]:
+    def convert_pdf_to_markdown(
+        self,
+        *,
+        storage_key: str,
+        task_id: str | None = None,
+    ) -> tuple[PdfToMarkdownResult | None, str | None]:
         convert_url = f"{self.base_url}/internal/converters/pdf-to-markdown"
+        request_headers = {"X-Convert-Task-Id": task_id} if task_id else None
+
         try:
             response = httpx.post(
                 convert_url,
                 json={"storage_key": storage_key},
+                headers=request_headers,
                 timeout=self.convert_timeout_seconds,
             )
             response.raise_for_status()

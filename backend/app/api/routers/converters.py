@@ -1,8 +1,10 @@
 import logging
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from ..dependencies import (
@@ -11,7 +13,12 @@ from ..dependencies import (
     get_file_or_404,
 )
 from ...database import get_session
+from ...models import ConvertTask, ConvertTaskStatus, FileRecord
 from ...services import FileConvertServiceClient
+from ...services.conversion_task_service import (
+    create_or_reuse_convert_task,
+    get_convert_task_by_id,
+)
 from ...services.extracted_image_persistence_service import (
     ExtractedImagePersistenceError,
     persist_extracted_images,
@@ -39,6 +46,60 @@ class PdfToMarkdownConvertRead(BaseModel):
     image_hashes: dict[str, str] = Field(default_factory=dict)
 
 
+class PdfToMarkdownTaskCreateRequest(BaseModel):
+    document_id: UUID
+
+
+class PdfToMarkdownTaskRead(BaseModel):
+    id: UUID
+    document_id: UUID
+    file_id: UUID
+    storage_bucket: str
+    storage_key: str
+    status: ConvertTaskStatus
+    attempt_count: int
+    reused: bool = False
+    markdown: str | None = None
+    image_hashes: dict[str, str] = Field(default_factory=dict)
+    error_message: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    updated_at: datetime
+
+
+def _resolve_pdf_file_record(document_id: UUID, session: Session) -> tuple[UUID, FileRecord]:
+    document = get_active_document_or_404(document_id, session)
+    if document.file_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document file not found")
+
+    file_record = get_file_or_404(document.file_id, session)
+    if file_record.extension.lower() != ".pdf":
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Only PDF document is supported")
+
+    return document.id, file_record
+
+
+def _to_task_read(task: ConvertTask, *, reused: bool = False) -> PdfToMarkdownTaskRead:
+    return PdfToMarkdownTaskRead(
+        id=task.id,
+        document_id=task.document_id,
+        file_id=task.file_id,
+        storage_bucket=task.storage_bucket,
+        storage_key=task.storage_key,
+        status=task.status,
+        attempt_count=task.attempt_count,
+        reused=reused,
+        markdown=task.markdown,
+        image_hashes=task.image_hashes,
+        error_message=task.error_message,
+        created_at=task.created_at,
+        started_at=task.started_at,
+        finished_at=task.finished_at,
+        updated_at=task.updated_at,
+    )
+
+
 @router.get("/availability", response_model=ConverterAvailabilityRead)
 def get_converter_availability(
     client: FileConvertServiceClient = Depends(get_file_convert_service_client),
@@ -60,19 +121,44 @@ def get_converter_availability(
     )
 
 
+@router.post("/pdf-to-markdown/tasks", response_model=PdfToMarkdownTaskRead)
+def create_pdf_to_markdown_task(
+    payload: PdfToMarkdownTaskCreateRequest,
+    session: Session = Depends(get_session),
+) -> PdfToMarkdownTaskRead:
+    document_id, file_record = _resolve_pdf_file_record(payload.document_id, session)
+
+    try:
+        submission = create_or_reuse_convert_task(
+            session,
+            document_id=document_id,
+            file_id=file_record.id,
+            storage_bucket=file_record.storage_bucket,
+            storage_key=file_record.storage_key,
+        )
+    except IntegrityError as exc:
+        session.rollback()
+        logger.exception("Failed to create convert task, document_id=%s", payload.document_id)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Convert task conflict") from exc
+
+    return _to_task_read(submission.task, reused=submission.reused)
+
+
+@router.get("/pdf-to-markdown/tasks/{task_id}", response_model=PdfToMarkdownTaskRead)
+def get_pdf_to_markdown_task(task_id: UUID, session: Session = Depends(get_session)) -> PdfToMarkdownTaskRead:
+    task = get_convert_task_by_id(session, task_id=task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Convert task not found")
+    return _to_task_read(task)
+
+
 @router.post("/pdf-to-markdown", response_model=PdfToMarkdownConvertRead)
 def convert_pdf_to_markdown(
     payload: PdfToMarkdownConvertRequest,
     session: Session = Depends(get_session),
     client: FileConvertServiceClient = Depends(get_file_convert_service_client),
 ) -> PdfToMarkdownConvertRead:
-    document = get_active_document_or_404(payload.document_id, session)
-    if document.file_id is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document file not found")
-
-    file_record = get_file_or_404(document.file_id, session)
-    if file_record.extension.lower() != ".pdf":
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Only PDF document is supported")
+    document_id, file_record = _resolve_pdf_file_record(payload.document_id, session)
 
     convert_result, error = client.convert_pdf_to_markdown(storage_key=file_record.storage_key)
     if error is not None:
@@ -102,7 +188,7 @@ def convert_pdf_to_markdown(
             ) from exc
 
     return PdfToMarkdownConvertRead(
-        document_id=document.id,
+        document_id=document_id,
         storage_key=file_record.storage_key,
         markdown=convert_result.markdown if convert_result is not None else "",
         image_hashes=convert_result.image_hashes if convert_result is not None else {},
