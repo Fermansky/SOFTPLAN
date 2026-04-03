@@ -32,5 +32,6 @@ The service uses these environment variables:
 
 - `POST /internal/storage/objects` upload file to MinIO (compatibility path)
 - `GET /internal/storage/objects/{storage_key}` download file bytes from MinIO
-- `POST /internal/converters/pdf-to-markdown` convert a PDF in MinIO to Markdown text
+- `POST /internal/converters/pdf-to-markdown` convert a PDF in MinIO to Markdown text and image hash mapping
   - Request JSON: `{"storage_key": "<object-key>.pdf"}`
+  - Response JSON: `{"storage_key": "<object-key>.pdf", "markdown": "...", "image_hashes": {"<images_key>": "<sha256>"}}`

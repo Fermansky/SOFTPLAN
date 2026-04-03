@@ -1,10 +1,18 @@
+import hashlib
 import io
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PdfMarkdownConvertResult:
+    markdown: str
+    image_hashes: dict[str, str]
 
 
 class MarkerPdfToMarkdownConverter:
@@ -28,21 +36,25 @@ class MarkerPdfToMarkdownConverter:
         self._pdf_converter = PdfConverter(artifact_dict=create_model_dict())
         self._text_from_rendered = text_from_rendered
 
-    def _upload_rendered_images(self, images: dict[Any, Any] | None) -> None:
+    def _upload_rendered_images(self, images: dict[Any, Any] | None) -> dict[str, str]:
         if not images:
-            return
+            return {}
 
-        for image in images.values():
+        image_hashes: dict[str, str] = {}
+        for image_key, image in images.items():
             png_stream = io.BytesIO()
             image.save(png_stream, format="PNG")
-            self._image_uploader(png_stream.getvalue(), content_type="image/png")
+            payload = png_stream.getvalue()
+            self._image_uploader(payload, content_type="image/png")
+            image_hashes[str(image_key)] = hashlib.sha256(payload).hexdigest()
+        return image_hashes
 
-    def convert(self, payload: bytes) -> str:
+    def convert(self, payload: bytes) -> PdfMarkdownConvertResult:
         pdf_stream = io.BytesIO(payload)
         rendered = self._pdf_converter(pdf_stream)
         text, _, images = self._text_from_rendered(rendered)
-        self._upload_rendered_images(images)
-        return text
+        image_hashes = self._upload_rendered_images(images)
+        return PdfMarkdownConvertResult(markdown=text, image_hashes=image_hashes)
 
 
 @lru_cache(maxsize=1)

@@ -1,7 +1,14 @@
 import os
+from dataclasses import dataclass
 from functools import lru_cache
 
 import httpx
+
+
+@dataclass(frozen=True)
+class PdfToMarkdownResult:
+    markdown: str
+    image_hashes: dict[str, str]
 
 
 class FileConvertServiceClient:
@@ -30,7 +37,7 @@ class FileConvertServiceClient:
             return False, f"Unexpected health payload: {payload!r}"
         return True, None
 
-    def convert_pdf_to_markdown(self, *, storage_key: str) -> tuple[str | None, str | None]:
+    def convert_pdf_to_markdown(self, *, storage_key: str) -> tuple[PdfToMarkdownResult | None, str | None]:
         convert_url = f"{self.base_url}/internal/converters/pdf-to-markdown"
         try:
             response = httpx.post(
@@ -43,10 +50,24 @@ class FileConvertServiceClient:
         except Exception as exc:
             return None, str(exc)
 
-        markdown = payload.get("markdown") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            return None, f"Unexpected convert response payload: {payload!r}"
+
+        markdown = payload.get("markdown")
         if not isinstance(markdown, str):
             return None, f"Unexpected convert response payload: {payload!r}"
-        return markdown, None
+
+        image_hashes = payload.get("image_hashes", {})
+        if not isinstance(image_hashes, dict):
+            return None, f"Unexpected convert response payload: {payload!r}"
+
+        normalized_image_hashes: dict[str, str] = {}
+        for key, value in image_hashes.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                return None, f"Unexpected convert response payload: {payload!r}"
+            normalized_image_hashes[key] = value
+
+        return PdfToMarkdownResult(markdown=markdown, image_hashes=normalized_image_hashes), None
 
 
 @lru_cache(maxsize=1)

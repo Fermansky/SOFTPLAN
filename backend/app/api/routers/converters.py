@@ -2,7 +2,7 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session
 
 from ..dependencies import (
@@ -32,6 +32,7 @@ class PdfToMarkdownConvertRead(BaseModel):
     document_id: UUID
     storage_key: str
     markdown: str
+    image_hashes: dict[str, str] = Field(default_factory=dict)
 
 
 @router.get("/availability", response_model=ConverterAvailabilityRead)
@@ -69,7 +70,7 @@ def convert_pdf_to_markdown(
     if file_record.extension.lower() != ".pdf":
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Only PDF document is supported")
 
-    markdown, error = client.convert_pdf_to_markdown(storage_key=file_record.storage_key)
+    convert_result, error = client.convert_pdf_to_markdown(storage_key=file_record.storage_key)
     if error is not None:
         logger.warning(
             "file-convert-service convert failed, document_id=%s, storage_key=%s, error=%s",
@@ -85,5 +86,6 @@ def convert_pdf_to_markdown(
     return PdfToMarkdownConvertRead(
         document_id=document.id,
         storage_key=file_record.storage_key,
-        markdown=markdown or "",
+        markdown=convert_result.markdown if convert_result is not None else "",
+        image_hashes=convert_result.image_hashes if convert_result is not None else {},
     )

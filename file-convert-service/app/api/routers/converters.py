@@ -2,7 +2,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from minio.error import S3Error
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..dependencies import get_marker_pdf_to_markdown_converter, get_minio_storage
 from ...services import MarkerPdfToMarkdownConverter, MinioStorage
@@ -18,6 +18,7 @@ class ConvertPdfToMarkdownRequest(BaseModel):
 class ConvertPdfToMarkdownRead(BaseModel):
     storage_key: str
     markdown: str
+    image_hashes: dict[str, str] = Field(default_factory=dict)
 
 
 @router.post("/pdf-to-markdown", response_model=ConvertPdfToMarkdownRead)
@@ -45,7 +46,7 @@ def convert_pdf_to_markdown_from_storage(
         ) from exc
 
     try:
-        markdown = converter.convert(pdf_payload)
+        convert_result = converter.convert(pdf_payload)
     except RuntimeError as exc:
         logger.exception("Marker converter is unavailable")
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
@@ -56,4 +57,8 @@ def convert_pdf_to_markdown_from_storage(
             detail=f"PDF conversion failed: {exc}",
         ) from exc
 
-    return ConvertPdfToMarkdownRead(storage_key=storage_key, markdown=markdown)
+    return ConvertPdfToMarkdownRead(
+        storage_key=storage_key,
+        markdown=convert_result.markdown,
+        image_hashes=convert_result.image_hashes,
+    )

@@ -1,3 +1,4 @@
+import hashlib
 import io
 import importlib.util
 import os
@@ -12,6 +13,7 @@ if SPEC is None or SPEC.loader is None:
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 MarkerPdfToMarkdownConverter = MODULE.MarkerPdfToMarkdownConverter
+PdfMarkdownConvertResult = MODULE.PdfMarkdownConvertResult
 
 
 class _FakeImage:
@@ -44,7 +46,9 @@ class MarkerPdfToMarkdownConverterTests(TestCase):
 
         result = converter.convert(b"%PDF-1.7\n")
 
-        self.assertEqual(result, "# markdown")
+        self.assertIsInstance(result, PdfMarkdownConvertResult)
+        self.assertEqual(result.markdown, "# markdown")
+        self.assertEqual(result.image_hashes, {})
         self.assertIsInstance(captured["arg"], io.BytesIO)
         self.assertEqual(captured["arg"].getvalue(), b"%PDF-1.7\n")
 
@@ -56,7 +60,7 @@ class MarkerPdfToMarkdownConverterTests(TestCase):
         uploader_calls = []
 
         converter._pdf_converter = lambda file_input: "rendered-object"
-        converter._text_from_rendered = lambda rendered: ("# markdown", None, {"a": image_1, "b": image_2})
+        converter._text_from_rendered = lambda rendered: ("# markdown", None, {1: image_1, "b": image_2})
 
         def fake_image_uploader(payload: bytes, *, content_type: str):
             uploader_calls.append({"payload": payload, "content_type": content_type})
@@ -65,7 +69,14 @@ class MarkerPdfToMarkdownConverterTests(TestCase):
 
         result = converter.convert(b"%PDF-1.7\n")
 
-        self.assertEqual(result, "# markdown")
+        self.assertEqual(result.markdown, "# markdown")
+        self.assertEqual(
+            result.image_hashes,
+            {
+                "1": hashlib.sha256(b"img-1").hexdigest(),
+                "b": hashlib.sha256(b"img-2").hexdigest(),
+            },
+        )
         self.assertEqual(len(uploader_calls), 2)
         self.assertEqual(uploader_calls[0]["payload"], b"img-1")
         self.assertEqual(uploader_calls[1]["payload"], b"img-2")
@@ -84,7 +95,8 @@ class MarkerPdfToMarkdownConverterTests(TestCase):
 
         result = converter.convert(b"%PDF-1.7\n")
 
-        self.assertEqual(result, "# markdown")
+        self.assertEqual(result.markdown, "# markdown")
+        self.assertEqual(result.image_hashes, {})
         self.assertEqual(uploader_calls, [])
 
     def test_convert_raises_when_image_upload_fails(self):
