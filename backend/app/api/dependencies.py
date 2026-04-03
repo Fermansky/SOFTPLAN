@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import HTTPException, status
 from sqlmodel import Session, select
 
-from ..models import Document, FileRecord, Project, ProjectSoftwareRelation, Software
+from ..models import Document, ExtractedImage, FileRecord, Project, ProjectSoftwareRelation, Software
 from ..services import (
     FileConvertServiceClient,
     MinioStorage,
@@ -42,6 +42,14 @@ def get_file_or_404(file_id: UUID, session: Session) -> FileRecord:
     if file_record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return file_record
+
+
+def get_extracted_image_or_404(image_id: int, session: Session) -> ExtractedImage:
+    statement = select(ExtractedImage).where(ExtractedImage.id == image_id)
+    extracted_image = session.exec(statement).first()
+    if extracted_image is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Extracted image not found")
+    return extracted_image
 
 
 def get_project_software_relation_or_404(

@@ -1,4 +1,5 @@
 from .document import Document, DocumentCreate, DocumentRead, DocumentUpdate
+from .extracted_image import ExtractedImage, ExtractedImageCreate, ExtractedImageRead, ExtractedImageUpdate
 from .file_record import FileRecord, FileRecordCreate, FileRecordRead
 from .project import Project, ProjectCreate, ProjectRead, ProjectStatus, ProjectUpdate
 from .project_software_relation import (
@@ -14,6 +15,10 @@ __all__ = [
     "DocumentCreate",
     "DocumentRead",
     "DocumentUpdate",
+    "ExtractedImage",
+    "ExtractedImageCreate",
+    "ExtractedImageRead",
+    "ExtractedImageUpdate",
     "FileRecord",
     "FileRecordCreate",
     "FileRecordRead",
