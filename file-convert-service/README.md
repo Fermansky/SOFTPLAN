@@ -35,3 +35,4 @@ The service uses these environment variables:
 - `POST /internal/converters/pdf-to-markdown` convert a PDF in MinIO to Markdown text and image hash mapping
   - Request JSON: `{"storage_key": "<object-key>.pdf"}`
   - Response JSON: `{"storage_key": "<object-key>.pdf", "markdown": "...", "image_hashes": {"<images_key>": "<sha256>"}}`
+  - Rendered images are serialized by key suffix when recognized (`jpg/jpeg/png/webp/gif/bmp/tiff`); unknown or failed format serialization falls back to PNG.

@@ -17,13 +17,23 @@ PdfMarkdownConvertResult = MODULE.PdfMarkdownConvertResult
 
 
 class _FakeImage:
-    def __init__(self, payload: bytes):
+    def __init__(
+        self,
+        payload: bytes,
+        *,
+        payload_by_format: dict[str, bytes] | None = None,
+        fail_formats: set[str] | None = None,
+    ):
         self.payload = payload
+        self.payload_by_format = payload_by_format or {}
+        self.fail_formats = fail_formats or set()
         self.save_calls = []
 
     def save(self, output, *, format: str):
         self.save_calls.append(format)
-        output.write(self.payload)
+        if format in self.fail_formats:
+            raise OSError(f"cannot save as {format}")
+        output.write(self.payload_by_format.get(format, self.payload))
 
 
 class MarkerPdfToMarkdownConverterTests(TestCase):
@@ -52,15 +62,24 @@ class MarkerPdfToMarkdownConverterTests(TestCase):
         self.assertIsInstance(captured["arg"], io.BytesIO)
         self.assertEqual(captured["arg"].getvalue(), b"%PDF-1.7\n")
 
-    def test_convert_uploads_all_rendered_images_as_png(self):
+    def test_convert_uploads_images_using_format_inferred_from_key(self):
         converter = MarkerPdfToMarkdownConverter.__new__(MarkerPdfToMarkdownConverter)
 
-        image_1 = _FakeImage(b"img-1")
-        image_2 = _FakeImage(b"img-2")
+        jpeg_payload = b"jpeg-encoded"
+        png_payload = b"png-encoded"
+        image_jpeg = _FakeImage(b"fallback", payload_by_format={"JPEG": jpeg_payload})
+        image_png = _FakeImage(b"fallback", payload_by_format={"PNG": png_payload})
         uploader_calls = []
 
         converter._pdf_converter = lambda file_input: "rendered-object"
-        converter._text_from_rendered = lambda rendered: ("# markdown", None, {1: image_1, "b": image_2})
+        converter._text_from_rendered = lambda rendered: (
+            "# markdown",
+            None,
+            {
+                "_page_3_Picture_2.jpeg": image_jpeg,
+                "diagram.png": image_png,
+            },
+        )
 
         def fake_image_uploader(payload: bytes, *, content_type: str):
             uploader_calls.append({"payload": payload, "content_type": content_type})
@@ -73,17 +92,59 @@ class MarkerPdfToMarkdownConverterTests(TestCase):
         self.assertEqual(
             result.image_hashes,
             {
-                "1": hashlib.sha256(b"img-1").hexdigest(),
-                "b": hashlib.sha256(b"img-2").hexdigest(),
+                "_page_3_Picture_2.jpeg": hashlib.sha256(jpeg_payload).hexdigest(),
+                "diagram.png": hashlib.sha256(png_payload).hexdigest(),
             },
         )
         self.assertEqual(len(uploader_calls), 2)
-        self.assertEqual(uploader_calls[0]["payload"], b"img-1")
-        self.assertEqual(uploader_calls[1]["payload"], b"img-2")
-        self.assertEqual(uploader_calls[0]["content_type"], "image/png")
+        self.assertEqual(uploader_calls[0]["payload"], jpeg_payload)
+        self.assertEqual(uploader_calls[0]["content_type"], "image/jpeg")
+        self.assertEqual(uploader_calls[1]["payload"], png_payload)
         self.assertEqual(uploader_calls[1]["content_type"], "image/png")
-        self.assertEqual(image_1.save_calls, ["PNG"])
-        self.assertEqual(image_2.save_calls, ["PNG"])
+        self.assertEqual(image_jpeg.save_calls, ["JPEG"])
+        self.assertEqual(image_png.save_calls, ["PNG"])
+
+    def test_convert_with_unknown_extension_defaults_to_png(self):
+        converter = MarkerPdfToMarkdownConverter.__new__(MarkerPdfToMarkdownConverter)
+
+        png_payload = b"unknown-ext-png"
+        image = _FakeImage(b"fallback", payload_by_format={"PNG": png_payload})
+        uploader_calls = []
+
+        converter._pdf_converter = lambda file_input: "rendered-object"
+        converter._text_from_rendered = lambda rendered: ("# markdown", None, {"marker_image_unknown": image})
+        converter._image_uploader = lambda payload, *, content_type: uploader_calls.append(
+            {"payload": payload, "content_type": content_type}
+        )
+
+        result = converter.convert(b"%PDF-1.7\n")
+
+        self.assertEqual(result.image_hashes, {"marker_image_unknown": hashlib.sha256(png_payload).hexdigest()})
+        self.assertEqual(uploader_calls, [{"payload": png_payload, "content_type": "image/png"}])
+        self.assertEqual(image.save_calls, ["PNG"])
+
+    def test_convert_falls_back_to_png_when_inferred_format_save_fails(self):
+        converter = MarkerPdfToMarkdownConverter.__new__(MarkerPdfToMarkdownConverter)
+
+        png_payload = b"fallback-png"
+        image = _FakeImage(
+            b"unused",
+            payload_by_format={"PNG": png_payload},
+            fail_formats={"JPEG"},
+        )
+        uploader_calls = []
+
+        converter._pdf_converter = lambda file_input: "rendered-object"
+        converter._text_from_rendered = lambda rendered: ("# markdown", None, {"photo.jpg": image})
+        converter._image_uploader = lambda payload, *, content_type: uploader_calls.append(
+            {"payload": payload, "content_type": content_type}
+        )
+
+        result = converter.convert(b"%PDF-1.7\n")
+
+        self.assertEqual(result.image_hashes, {"photo.jpg": hashlib.sha256(png_payload).hexdigest()})
+        self.assertEqual(uploader_calls, [{"payload": png_payload, "content_type": "image/png"}])
+        self.assertEqual(image.save_calls, ["JPEG", "PNG"])
 
     def test_convert_with_empty_images_skips_upload(self):
         converter = MarkerPdfToMarkdownConverter.__new__(MarkerPdfToMarkdownConverter)
