@@ -1,3 +1,12 @@
+"""文档解析异步任务编排服务。
+
+职责：
+1. 创建/复用解析任务（防止同文档并发重复执行）。
+2. 维护任务状态流转：pending -> running -> succeeded/failed。
+3. 在后台 worker 中轮询执行任务并持久化结果。
+4. 处理异常与重启恢复，避免任务悬挂在 running 状态。
+"""
+
 import asyncio
 import logging
 import os
@@ -19,17 +28,25 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class DocumentParsingTaskSubmissionResult:
+    """任务提交结果。
+
+    - `reused=True` 表示命中了现有进行中任务。
+    - `reused=False` 表示创建了新任务。
+    """
+
     task: DocumentParsingTask
     reused: bool
 
 
 def _to_bool(value: str | None, *, default: bool = False) -> bool:
+    """将环境变量字符串解析为布尔值。"""
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def get_active_document_parsing_task_for_document(session: Session, *, document_id: UUID) -> DocumentParsingTask | None:
+    """获取某文档当前进行中的任务（pending/running）。"""
     statement = (
         select(DocumentParsingTask)
         .where(
@@ -49,6 +66,12 @@ def create_or_reuse_document_parsing_task(
     storage_bucket: str,
     storage_key: str,
 ) -> DocumentParsingTaskSubmissionResult:
+    """创建或复用解析任务。
+
+    约束：
+    - 同文档若已有进行中任务，直接复用。
+    - 若并发创建触发唯一约束，回滚后再次查询并复用。
+    """
     existing = get_active_document_parsing_task_for_document(session, document_id=document_id)
     if existing is not None:
         return DocumentParsingTaskSubmissionResult(task=existing, reused=True)
@@ -75,6 +98,7 @@ def create_or_reuse_document_parsing_task(
 
 
 def get_document_parsing_task_by_id(session: Session, *, task_id: UUID) -> DocumentParsingTask | None:
+    """按任务 ID 查询任务。"""
     statement = select(DocumentParsingTask).where(DocumentParsingTask.id == task_id)
     return session.exec(statement).first()
 
@@ -85,6 +109,7 @@ def get_latest_document_parsing_task_for_document_file(
     document_id: UUID,
     file_id: UUID,
 ) -> DocumentParsingTask | None:
+    """按 document_id + file_id 获取最新任务。"""
     statement = (
         select(DocumentParsingTask)
         .where(
@@ -97,6 +122,7 @@ def get_latest_document_parsing_task_for_document_file(
 
 
 def _mark_task_failed(session: Session, *, task: DocumentParsingTask, error_message: str) -> None:
+    """统一失败落库动作，避免各分支重复写状态字段。"""
     now = utc_now()
     task.status = DocumentParsingTaskStatus.failed
     task.error_message = error_message
@@ -107,6 +133,11 @@ def _mark_task_failed(session: Session, *, task: DocumentParsingTask, error_mess
 
 
 def recover_orphaned_document_parsing_tasks() -> int:
+    """将历史遗留 running 任务标记为 failed。
+
+    场景：进程异常退出后，running 任务不会自动回滚。
+    处理：worker 启动时统一收敛，避免查询端永远看到 running。
+    """
     with Session(engine) as session:
         statement = select(DocumentParsingTask).where(DocumentParsingTask.status == DocumentParsingTaskStatus.running)
         running_tasks = list(session.exec(statement).all())
@@ -126,6 +157,11 @@ def recover_orphaned_document_parsing_tasks() -> int:
 
 
 def claim_next_pending_document_parsing_task_id() -> UUID | None:
+    """领取一个待处理任务并切换为 running。
+
+    约束：
+    - 使用 `FOR UPDATE SKIP LOCKED`，支持多 worker 并发无重复消费。
+    """
     with Session(engine) as session:
         statement = (
             select(DocumentParsingTask)
@@ -151,6 +187,14 @@ def claim_next_pending_document_parsing_task_id() -> UUID | None:
 
 
 def execute_document_parsing_task(task_id: UUID, *, client: FileConvertServiceClient | None = None) -> None:
+    """执行单个解析任务。
+
+    流程：
+    1. 校验任务存在且处于 running。
+    2. 调用下游解析服务。
+    3. 持久化 extracted_images。
+    4. 成功写回 markdown/image_hashes，失败写 failed。
+    """
     file_convert_client = client or get_file_convert_service_client()
 
     with Session(engine) as session:
@@ -211,6 +255,7 @@ def execute_document_parsing_task(task_id: UUID, *, client: FileConvertServiceCl
 
 
 def process_one_pending_document_parsing_task(*, client: FileConvertServiceClient | None = None) -> bool:
+    """处理一个 pending 任务，返回是否实际处理了任务。"""
     task_id = claim_next_pending_document_parsing_task_id()
     if task_id is None:
         return False
@@ -220,12 +265,15 @@ def process_one_pending_document_parsing_task(*, client: FileConvertServiceClien
 
 
 class DocumentParsingTaskWorker:
+    """进程内任务 worker。"""
+
     def __init__(self, *, poll_interval_seconds: float = 1.0) -> None:
         self.poll_interval_seconds = poll_interval_seconds
         self._stop_event = asyncio.Event()
         self._runner_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
+        """启动 worker：先恢复孤儿任务，再进入轮询循环。"""
         if self._runner_task is not None and not self._runner_task.done():
             return
 
@@ -238,6 +286,7 @@ class DocumentParsingTaskWorker:
         logger.info("document parsing task worker started")
 
     async def stop(self) -> None:
+        """停止 worker 并等待当前循环优雅退出。"""
         runner_task = self._runner_task
         if runner_task is None:
             return
@@ -248,6 +297,12 @@ class DocumentParsingTaskWorker:
         logger.info("document parsing task worker stopped")
 
     async def _run_loop(self) -> None:
+        """循环消费任务。
+
+        设计点：
+        - 有任务时立即继续下一轮，提高吞吐。
+        - 无任务时按轮询间隔休眠，降低空转开销。
+        """
         while not self._stop_event.is_set():
             try:
                 processed = await asyncio.to_thread(process_one_pending_document_parsing_task)
@@ -266,12 +321,13 @@ class DocumentParsingTaskWorker:
 
 @lru_cache(maxsize=1)
 def get_document_parsing_task_worker() -> DocumentParsingTaskWorker:
+    """构建 worker 单例。"""
     poll_interval_seconds = float(os.getenv("DOCUMENT_PARSING_TASK_WORKER_POLL_INTERVAL_SECONDS", "1.0"))
     return DocumentParsingTaskWorker(poll_interval_seconds=poll_interval_seconds)
 
 
 def is_document_parsing_task_worker_enabled() -> bool:
+    """读取 worker 开关。"""
     value = os.getenv("DOCUMENT_PARSING_TASK_WORKER_ENABLED")
     return _to_bool(value, default=True)
-
 

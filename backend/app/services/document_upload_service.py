@@ -1,3 +1,16 @@
+"""文档上传编排服务。
+
+职责：
+1. 解析上传输入并规范化元数据。
+2. 按文件哈希进行去重复用。
+3. 对“记录存在但对象丢失”的场景执行修复上传。
+4. 处理并发冲突下的回滚与 MinIO 清理。
+
+说明：
+- 本模块是上传路由的业务编排层，路由只负责 HTTP 入参与权限校验。
+- 上传新对象时统一写入文档前缀（documents/）。
+"""
+
 import hashlib
 import json
 import logging
@@ -19,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class UploadInput:
+    """上传输入的规范化结果。"""
+
     file_content: bytes
     content_type: str
     extension: str
@@ -29,6 +44,12 @@ class UploadInput:
 
 @dataclass
 class UploadFileResolution:
+    """文件定位决议。
+
+    - `created_new_file=True`：本次新建了 FileRecord 和 MinIO 对象。
+    - `repaired_existing_file=True`：复用了 FileRecord，但修复了缺失对象。
+    """
+
     file_record: FileRecord
     uploaded_storage_ref: StoredObjectRef | None
     created_new_file: bool
@@ -36,6 +57,7 @@ class UploadFileResolution:
 
 
 def _parse_extra_info(extra_info: str | None) -> dict[str, Any] | None:
+    """解析 extra_info JSON，并保证其为对象类型。"""
     if extra_info is None or extra_info.strip() == "":
         return None
     try:
@@ -58,11 +80,16 @@ def _parse_extra_info(extra_info: str | None) -> dict[str, Any] | None:
 
 
 def _find_file_by_hash(file_hash: str, session: Session) -> FileRecord | None:
+    """按文件哈希查找已存在文件记录。"""
     statement = select(FileRecord).where(FileRecord.file_hash == file_hash)
     return session.exec(statement).first()
 
 
 def _cleanup_uploaded_object(storage: MinioStorage, storage_ref: StoredObjectRef) -> None:
+    """在数据库写入失败时尝试清理刚上传的对象。
+
+    这是并发冲突/事务失败场景下的补偿动作，避免无主对象堆积。
+    """
     try:
         storage.remove_object(storage_ref.storage_key, bucket=storage_ref.bucket)
     except S3Error:
@@ -79,6 +106,7 @@ async def prepare_upload_input(
     extra_info: str | None,
     upload_file: UploadFile,
 ) -> UploadInput:
+    """读取上传文件并构建规范化输入。"""
     file_content = await upload_file.read()
     if not file_content:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty")
@@ -105,6 +133,7 @@ def _repair_missing_object_if_needed(
     storage: MinioStorage,
     upload_input: UploadInput,
 ) -> StoredObjectRef | None:
+    """检测并修复“记录存在但对象丢失”的异常状态。"""
     if storage.object_exists(file_record.storage_key, bucket=file_record.storage_bucket):
         return None
 
@@ -121,6 +150,7 @@ def _repair_missing_object_if_needed(
         extension=upload_input.extension,
     )
 
+    # 修复成功后，FileRecord 需指向新的可用对象。
     file_record.storage_bucket = repaired_storage_ref.bucket
     file_record.storage_key = repaired_storage_ref.storage_key
     file_record.file_size = len(upload_input.file_content)
@@ -136,6 +166,7 @@ def resolve_file_record(
     upload_input: UploadInput,
     project_id: UUID,
 ) -> UploadFileResolution:
+    """决策文件去重分支：新建 / 复用 / 缺失修复。"""
     file_record = _find_file_by_hash(upload_input.file_hash, session)
     if file_record is None:
         try:
@@ -207,6 +238,7 @@ def persist_document(
     software_id: UUID | None,
     description: str,
 ) -> Document:
+    """持久化文档记录并处理并发冲突补偿。"""
     file_record = resolution.file_record
     document = Document(
         file_id=file_record.id,
@@ -223,6 +255,8 @@ def persist_document(
             try:
                 session.flush()
             except IntegrityError:
+                # 并发上传同一文件时，可能在 flush 阶段命中 file_hash 唯一约束。
+                # 处理策略：回滚事务 -> 清理本次对象 -> 复用已存在 FileRecord。
                 session.rollback()
                 if resolution.uploaded_storage_ref is not None:
                     _cleanup_uploaded_object(storage, resolution.uploaded_storage_ref)
@@ -233,6 +267,7 @@ def persist_document(
                 file_record = existing_file
                 document.file_id = file_record.id
         elif resolution.repaired_existing_file:
+            # 修复路径下需要更新 FileRecord 的存储定位信息。
             session.add(file_record)
 
         session.add(document)
@@ -259,6 +294,7 @@ async def upload_document_with_dedupe(
     extra_info: str | None,
     upload_file: UploadFile,
 ) -> Document:
+    """文档上传主编排：输入准备 -> 文件决议 -> 文档落库。"""
     upload_input = await prepare_upload_input(name=name, extra_info=extra_info, upload_file=upload_file)
     resolution = resolve_file_record(
         session=session,
@@ -275,3 +311,4 @@ async def upload_document_with_dedupe(
         software_id=software_id,
         description=description,
     )
+
