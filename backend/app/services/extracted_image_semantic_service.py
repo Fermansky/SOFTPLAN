@@ -1,4 +1,16 @@
-﻿import base64
+﻿"""提取图片语义识别执行服务。
+
+职责：
+1. 加载图片语义描述提示词及默认模型配置。
+2. 将已落库的 ExtractedImage 转换为 LLM 可消费的多模态输入。
+3. 执行单次图片语义识别，并把失败原因收敛为结构化结果。
+
+说明：
+- 本模块只负责“一次执行”的编排，不负责任务落库和状态流转。
+- 所有失败场景都转换为 `ExtractedImageSemanticExecutionResult`，由上层任务服务决定如何持久化。
+"""
+
+import base64
 import hashlib
 import logging
 import os
@@ -15,12 +27,18 @@ from .minio_storage import MinioStorage
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "extracted_image_semantic.txt"
-_DEFAULT_USER_PROMPT = "\u8bf7\u57fa\u4e8e\u8fd9\u5f20\u56fe\u7247\u751f\u6210\u4e00\u6bb5\u4e2d\u6587\u8bed\u4e49\u63cf\u8ff0\u3002"
+_DEFAULT_USER_PROMPT = "请基于这张图片生成一段中文语义描述。"
 _DEFAULT_TARGET_MODEL_KEY = "__LLM_SERVICE_DEFAULT__"
 
 
 @dataclass(frozen=True)
 class ExtractedImageSemanticExecutionResult:
+    """单次语义识别执行结果。
+
+    - `succeeded=True` 时，`description/result_model` 应可用于任务落库。
+    - `succeeded=False` 时，`error_message` 保存面向任务层的失败原因。
+    """
+
     succeeded: bool
     description: str | None = None
     result_model: str | None = None
@@ -28,19 +46,27 @@ class ExtractedImageSemanticExecutionResult:
 
 
 class ExtractedImageSemanticPromptError(RuntimeError):
-    """Raised when the semantic prompt configuration cannot be loaded."""
+    """图片语义提示词不可用。"""
 
 
 def _normalize_content_type(content_type: str | None) -> str:
+    """规范化 MIME 类型，移除参数并统一为小写。"""
     return (content_type or "").split(";")[0].strip().lower()
 
 
 def _to_data_url(payload: bytes, *, content_type: str) -> str:
+    """将图片字节转换为 data URL，避免暴露 MinIO 内部地址。"""
     encoded = base64.b64encode(payload).decode("ascii")
     return f"data:{content_type};base64,{encoded}"
 
 
 def resolve_extracted_image_semantic_prompt_path() -> Path:
+    """解析语义识别 prompt 文件路径。
+
+    约束：
+    - 显式环境变量优先。
+    - 未配置时回退到仓库内默认 prompt 文件。
+    """
     configured_path = os.getenv("EXTRACTED_IMAGE_SEMANTIC_PROMPT_PATH")
     if configured_path:
         return Path(configured_path).expanduser().resolve()
@@ -49,6 +75,11 @@ def resolve_extracted_image_semantic_prompt_path() -> Path:
 
 @lru_cache(maxsize=1)
 def load_extracted_image_semantic_prompt() -> str:
+    """加载并缓存图片语义识别系统提示词。
+
+    失败语义：
+    - 文件缺失、读取失败、内容为空时抛 `ExtractedImageSemanticPromptError`。
+    """
     prompt_path = resolve_extracted_image_semantic_prompt_path()
     try:
         prompt = prompt_path.read_text(encoding="utf-8").strip()
@@ -72,6 +103,11 @@ def load_extracted_image_semantic_prompt() -> str:
 
 
 def get_extracted_image_semantic_prompt_snapshot() -> tuple[str, str | None]:
+    """读取 prompt 快照信息，用于任务创建时固化路径和哈希。
+
+    失败语义：
+    - 文件不可读或为空时返回 `(path, None)`，由任务执行阶段再决定失败落库。
+    """
     prompt_path = resolve_extracted_image_semantic_prompt_path()
     try:
         prompt = prompt_path.read_text(encoding="utf-8").strip()
@@ -83,6 +119,7 @@ def get_extracted_image_semantic_prompt_snapshot() -> tuple[str, str | None]:
 
 
 def get_extracted_image_semantic_model() -> str | None:
+    """读取语义识别默认模型配置。"""
     value = os.getenv("EXTRACTED_IMAGE_SEMANTIC_MODEL")
     if value is None:
         return None
@@ -91,6 +128,13 @@ def get_extracted_image_semantic_model() -> str | None:
 
 
 def resolve_extracted_image_semantic_model(requested_model: str | None = None) -> str | None:
+    """解析本次执行目标模型。
+
+    约束：
+    - 请求显式指定模型时优先。
+    - 否则回退环境变量中的默认语义识别模型。
+    - 若仍为空，则让 llm-service 自行使用其默认模型。
+    """
     if requested_model is not None:
         stripped = requested_model.strip()
         if stripped:
@@ -99,6 +143,7 @@ def resolve_extracted_image_semantic_model(requested_model: str | None = None) -
 
 
 def get_extracted_image_semantic_target_model_key(target_model: str | None) -> str:
+    """将目标模型归一化为可参与唯一性约束的非空 key。"""
     return target_model or _DEFAULT_TARGET_MODEL_KEY
 
 
@@ -110,6 +155,17 @@ def execute_extracted_image_semantic_recognition(
     request_id: str | None = None,
     target_model: str | None = None,
 ) -> ExtractedImageSemanticExecutionResult:
+    """执行一次图片语义识别。
+
+    流程：
+    1. 校验资源确实是图片类型。
+    2. 加载系统提示词。
+    3. 从 MinIO 下载图片并转换为 data URL。
+    4. 调用 llm-service 多模态 chat 接口。
+
+    失败语义：
+    - 非图片、prompt 不可用、MinIO 下载失败、llm-service 调用失败时，不抛异常，统一返回失败结果。
+    """
     content_type = _normalize_content_type(extracted_image.content_type)
     if not content_type.startswith("image/"):
         return ExtractedImageSemanticExecutionResult(
@@ -155,6 +211,7 @@ def execute_extracted_image_semantic_recognition(
         model=target_model,
         request_id=request_id,
         input_parts=[
+            # 用户提示词同时保留在 prompt 和 text part 中，兼容纯文本和多模态两条内部链路。
             LlmTextInputPart(text=_DEFAULT_USER_PROMPT),
             LlmImageUrlInputPart(url=_to_data_url(payload, content_type=content_type)),
         ],
