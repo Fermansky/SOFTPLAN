@@ -6,8 +6,10 @@ from sqlmodel import Session, select
 from ..models import Document, ExtractedImage, FileRecord, Project, ProjectSoftwareRelation, Software
 from ..services import (
     FileConvertServiceClient,
+    LlmServiceClient,
     MinioStorage,
     get_file_convert_service_client as get_file_convert_service_client_service,
+    get_llm_service_client as get_llm_service_client_service,
     get_minio_storage as get_minio_storage_service,
 )
 
@@ -74,3 +76,7 @@ def get_minio_storage() -> MinioStorage:
 
 def get_file_convert_service_client() -> FileConvertServiceClient:
     return get_file_convert_service_client_service()
+
+
+def get_llm_service_client() -> LlmServiceClient:
+    return get_llm_service_client_service()

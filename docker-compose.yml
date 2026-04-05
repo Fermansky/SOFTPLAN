@@ -23,6 +23,7 @@ services:
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-softplan}
       FILE_CONVERT_SERVICE_BASE_URL: http://file-convert-service:8000
+      LLM_SERVICE_BASE_URL: http://llm-service:8000
       DOCUMENT_PARSING_TASK_WORKER_ENABLED: ${DOCUMENT_PARSING_TASK_WORKER_ENABLED:-true}
       DOCUMENT_PARSING_TASK_WORKER_POLL_INTERVAL_SECONDS: ${DOCUMENT_PARSING_TASK_WORKER_POLL_INTERVAL_SECONDS:-1.0}
     depends_on:
@@ -31,6 +32,8 @@ services:
       minio:
         condition: service_started
       file-convert-service:
+        condition: service_started
+      llm-service:
         condition: service_started
 
   file-convert-service:
@@ -53,6 +56,18 @@ services:
     depends_on:
       minio:
         condition: service_started
+
+  llm-service:
+    build:
+      context: ./llm-service
+    container_name: softplan-llm-service
+    ports:
+      - "8020:8000"
+    environment:
+      LLM_API_BASE_URL: ${LLM_API_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-gpt-4o-mini}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-30}
 
   postgres:
     image: postgres:15-alpine
@@ -89,4 +104,3 @@ volumes:
   minio_data:
   file_convert_hf_cache:
   file_convert_datalab_cache:
-

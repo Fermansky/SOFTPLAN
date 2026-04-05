@@ -2,6 +2,16 @@
 
 ## Start
 
+Create a local `.env` file before starting Docker:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Set `LLM_API_KEY` in `.env` to a real upstream key. Docker Compose reads `.env` automatically; it does not load `.env.example` by itself.
+
+Then start the stack:
+
 ```bash
 docker compose up --build
 ```
@@ -10,6 +20,13 @@ docker compose up --build
 
 - Frontend: http://localhost:3000
 - Backend: http://localhost:8000/health
-- FastAPI docs: http://localhost:8000/docs
-- MinIO API: http://localhost:9000
-- MinIO Console: http://localhost:9001
+- Backend Docs: http://localhost:8000/docs
+- File Convert Service: http://localhost:8010/health
+- LLM Service: http://localhost:8020/health
+- MinIO API: http://localhost:10000
+- MinIO Console: http://localhost:10001
+
+## Notes
+
+- `GET /health` on `llm-service` is only a liveness check for the service itself. It does not verify that the upstream LLM base URL, API key, or model are valid.
+- If `POST /internal/llm/chat` returns 502, check the `llm-service` container logs first. The service now logs missing-key, upstream HTTP, timeout, and payload-shape failures with request metadata but without logging prompts or secrets.
