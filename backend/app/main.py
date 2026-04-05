@@ -6,7 +6,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api import api_router
 from .database import create_db_and_tables
-from .services import get_document_parsing_task_worker, is_document_parsing_task_worker_enabled
+from .services import (
+    ExtractedImageSemanticPromptError,
+    get_document_parsing_task_worker,
+    is_document_parsing_task_worker_enabled,
+    load_extracted_image_semantic_prompt,
+)
 
 
 def configure_logging() -> None:
@@ -33,6 +38,14 @@ def configure_logging() -> None:
         )
 
 
+def _log_extracted_image_semantic_prompt_status() -> None:
+    logger = logging.getLogger("app")
+    try:
+        load_extracted_image_semantic_prompt()
+    except ExtractedImageSemanticPromptError as exc:
+        logger.warning("Extracted image semantic prompt is unavailable: %s", exc)
+
+
 def create_app() -> FastAPI:
     configure_logging()
     app = FastAPI(title="Softplan API", version="0.1.0")
@@ -47,6 +60,7 @@ def create_app() -> FastAPI:
     )
 
     app.add_event_handler("startup", create_db_and_tables)
+    app.add_event_handler("startup", _log_extracted_image_semantic_prompt_status)
 
     if is_document_parsing_task_worker_enabled():
         worker = get_document_parsing_task_worker()
@@ -65,5 +79,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-
-

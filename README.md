@@ -30,3 +30,5 @@ docker compose up --build
 
 - `GET /health` on `llm-service` is only a liveness check for the service itself. It does not verify that the upstream LLM base URL, API key, or model are valid.
 - If `POST /internal/llm/chat` returns 502, check the `llm-service` container logs first. The service now logs missing-key, upstream HTTP, timeout, and payload-shape failures with request metadata but without logging prompts or secrets.
+- `POST /extracted-images/{image_id}/semantic-description` generates a Chinese semantic description from an existing extracted image in MinIO.
+- Use `EXTRACTED_IMAGE_SEMANTIC_PROMPT_PATH` to point to the versioned prompt file, and optionally set `EXTRACTED_IMAGE_SEMANTIC_MODEL` to override the default model for image semantic extraction.
