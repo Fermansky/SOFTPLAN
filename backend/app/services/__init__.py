@@ -1,4 +1,4 @@
-from .document_parsing_task_service import (
+﻿from .document_parsing_task_service import (
     DocumentParsingTaskSubmissionResult,
     get_document_parsing_task_worker,
     is_document_parsing_task_worker_enabled,
@@ -10,14 +10,23 @@ from .file_convert_service import (
     UploadedImageMetadata,
     get_file_convert_service_client,
 )
-from .llm_service import LlmChatResult, LlmServiceClient, LlmUsage, get_llm_service_client
+from .llm_service import (
+    LlmChatResult,
+    LlmImageUrlInputPart,
+    LlmServiceClient,
+    LlmTextInputPart,
+    LlmUsage,
+    get_llm_service_client,
+)
 from .minio_storage import MinioStorage, StoredObjectRef, get_minio_storage
 
 __all__ = [
     "DocumentParsingTaskSubmissionResult",
     "FileConvertServiceClient",
     "LlmChatResult",
+    "LlmImageUrlInputPart",
     "LlmServiceClient",
+    "LlmTextInputPart",
     "LlmUsage",
     "MinioStorage",
     "PdfToMarkdownResult",
@@ -31,3 +40,4 @@ __all__ = [
     "is_document_parsing_task_worker_enabled",
     "upload_document_with_dedupe",
 ]
+

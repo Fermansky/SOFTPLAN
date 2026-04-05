@@ -1,4 +1,4 @@
-import os
+﻿import os
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -21,6 +21,19 @@ class LlmChatResult:
     request_id: str | None
 
 
+@dataclass(frozen=True)
+class LlmTextInputPart:
+    text: str
+
+
+@dataclass(frozen=True)
+class LlmImageUrlInputPart:
+    url: str
+
+
+LlmInputPart = LlmTextInputPart | LlmImageUrlInputPart
+
+
 class LlmServiceClient:
     def __init__(self, *, base_url: str, timeout_seconds: float = 30.0) -> None:
         self.base_url = base_url.rstrip("/")
@@ -30,6 +43,13 @@ class LlmServiceClient:
         if isinstance(value, bool) or not isinstance(value, int):
             return 0
         return value
+
+    def _serialize_input_part(self, part: LlmInputPart) -> dict[str, Any]:
+        if isinstance(part, LlmTextInputPart):
+            return {"type": "text", "text": part.text}
+        if isinstance(part, LlmImageUrlInputPart):
+            return {"type": "image_url", "image_url": {"url": part.url}}
+        raise TypeError(f"Unsupported llm input part: {part!r}")
 
     def check_availability(self) -> tuple[bool, str | None]:
         health_url = f"{self.base_url}/health"
@@ -54,6 +74,7 @@ class LlmServiceClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         request_id: str | None = None,
+        input_parts: list[LlmInputPart] | None = None,
     ) -> tuple[LlmChatResult | None, str | None]:
         url = f"{self.base_url}/internal/llm/chat"
         payload: dict[str, Any] = {"prompt": prompt}
@@ -67,6 +88,8 @@ class LlmServiceClient:
             payload["max_tokens"] = max_tokens
         if request_id is not None:
             payload["request_id"] = request_id
+        if input_parts is not None:
+            payload["input_parts"] = [self._serialize_input_part(part) for part in input_parts]
 
         try:
             response = httpx.post(url, json=payload, timeout=self.timeout_seconds)
@@ -110,3 +133,4 @@ def get_llm_service_client() -> LlmServiceClient:
     base_url = os.getenv("LLM_SERVICE_BASE_URL", "http://llm-service:8000")
     timeout_seconds = float(os.getenv("LLM_SERVICE_TIMEOUT_SECONDS", "30"))
     return LlmServiceClient(base_url=base_url, timeout_seconds=timeout_seconds)
+

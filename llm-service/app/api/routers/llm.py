@@ -1,13 +1,36 @@
-import logging
+﻿import logging
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from ..dependencies import get_openai_compatible_llm_client
-from ...services import OpenAICompatibleLlmClient, OpenAICompatibleLlmClientError
+from ...services import (
+    LlmImageUrlInputPart as ServiceLlmImageUrlInputPart,
+    LlmTextInputPart as ServiceLlmTextInputPart,
+    OpenAICompatibleLlmClient,
+    OpenAICompatibleLlmClientError,
+)
 
 router = APIRouter(prefix="/internal/llm", tags=["llm"])
 logger = logging.getLogger(__name__)
+
+
+class LlmChatTextInputPart(BaseModel):
+    type: Literal["text"]
+    text: str = Field(min_length=1)
+
+
+class LlmChatImageUrlValue(BaseModel):
+    url: str = Field(min_length=1)
+
+
+class LlmChatImageUrlInputPart(BaseModel):
+    type: Literal["image_url"]
+    image_url: LlmChatImageUrlValue
+
+
+LlmChatInputPart = Annotated[LlmChatTextInputPart | LlmChatImageUrlInputPart, Field(discriminator="type")]
 
 
 class LlmChatRequest(BaseModel):
@@ -17,6 +40,7 @@ class LlmChatRequest(BaseModel):
     temperature: float | None = None
     max_tokens: int | None = None
     request_id: str | None = None
+    input_parts: list[LlmChatInputPart] | None = None
 
 
 class LlmUsageRead(BaseModel):
@@ -32,6 +56,14 @@ class LlmChatRead(BaseModel):
     request_id: str | None = None
 
 
+def _to_service_input_part(part: LlmChatInputPart):
+    if isinstance(part, LlmChatTextInputPart):
+        return ServiceLlmTextInputPart(text=part.text)
+    if isinstance(part, LlmChatImageUrlInputPart):
+        return ServiceLlmImageUrlInputPart(url=part.image_url.url)
+    raise TypeError(f"Unsupported llm input part: {part!r}")
+
+
 @router.post("/chat", response_model=LlmChatRead)
 def chat(
     payload: LlmChatRequest,
@@ -41,11 +73,15 @@ def chat(
     if not prompt:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="prompt is required")
 
+    input_parts = payload.input_parts or []
+    image_part_count = sum(1 for part in input_parts if isinstance(part, LlmChatImageUrlInputPart))
     logger.info(
-        "Handling llm chat request request_id=%s prompt_length=%s has_custom_model=%s",
+        "Handling llm chat request request_id=%s prompt_length=%s has_custom_model=%s input_part_count=%s image_part_count=%s",
         payload.request_id,
         len(prompt),
         bool(payload.model),
+        len(input_parts),
+        image_part_count,
     )
 
     try:
@@ -56,13 +92,16 @@ def chat(
             temperature=payload.temperature,
             max_tokens=payload.max_tokens,
             request_id=payload.request_id,
+            input_parts=[_to_service_input_part(part) for part in input_parts] if input_parts else None,
         )
     except OpenAICompatibleLlmClientError as exc:
         logger.warning(
-            "LLM chat request failed request_id=%s prompt_length=%s has_custom_model=%s error=%s",
+            "LLM chat request failed request_id=%s prompt_length=%s has_custom_model=%s input_part_count=%s image_part_count=%s error=%s",
             payload.request_id,
             len(prompt),
             bool(payload.model),
+            len(input_parts),
+            image_part_count,
             exc,
         )
         raise HTTPException(
@@ -71,10 +110,12 @@ def chat(
         ) from exc
 
     logger.info(
-        "LLM chat request succeeded request_id=%s response_model=%s total_tokens=%s",
+        "LLM chat request succeeded request_id=%s response_model=%s total_tokens=%s input_part_count=%s image_part_count=%s",
         result.request_id,
         result.model,
         result.usage.total_tokens,
+        len(input_parts),
+        image_part_count,
     )
 
     return LlmChatRead(
@@ -87,3 +128,4 @@ def chat(
         ),
         request_id=result.request_id,
     )
+

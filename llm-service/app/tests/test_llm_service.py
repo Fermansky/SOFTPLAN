@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 from unittest import TestCase
 from unittest.mock import patch
@@ -79,6 +79,39 @@ class LlmServiceRouterTests(TestCase):
         )
         self.assertEqual(payload["request_id"], "req-user-1")
 
+    def test_chat_sends_multimodal_input_parts_to_upstream(self):
+        with patch(
+            "app.services.llm_client.httpx.post",
+            return_value=_ResponseStub(
+                {
+                    "id": "chatcmpl-1",
+                    "model": "gpt-test",
+                    "choices": [{"message": {"content": "image summary"}}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+                },
+                headers={"x-request-id": "req-header-1"},
+            ),
+        ) as post_mock:
+            response = self.client.post(
+                "/internal/llm/chat",
+                json={
+                    "prompt": "Describe the image",
+                    "request_id": "req-user-2",
+                    "input_parts": [
+                        {"type": "text", "text": "Describe the image"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        upstream_payload = post_mock.call_args.kwargs["json"]
+        self.assertEqual(upstream_payload["messages"][0]["content"][0], {"type": "text", "text": "Describe the image"})
+        self.assertEqual(
+            upstream_payload["messages"][0]["content"][1],
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        )
+
     def test_chat_returns_422_when_prompt_is_blank_after_strip(self):
         response = self.client.post("/internal/llm/chat", json={"prompt": "   "})
 
@@ -155,3 +188,4 @@ class LlmServiceRouterTests(TestCase):
             any("LLM_API_KEY is not configured" in message for message in captured_logs.output),
             captured_logs.output,
         )
+

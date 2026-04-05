@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import os
 from dataclasses import dataclass
 from functools import lru_cache
@@ -23,6 +23,19 @@ class LlmChatResult:
     model: str
     usage: LlmUsage
     request_id: str | None
+
+
+@dataclass(frozen=True)
+class LlmTextInputPart:
+    text: str
+
+
+@dataclass(frozen=True)
+class LlmImageUrlInputPart:
+    url: str
+
+
+LlmInputPart = LlmTextInputPart | LlmImageUrlInputPart
 
 
 @dataclass(frozen=True)
@@ -113,6 +126,13 @@ class OpenAICompatibleLlmClient:
             return "".join(chunks)
         raise OpenAICompatibleLlmClientError(f"Unexpected upstream payload: {payload!r}")
 
+    def _serialize_input_part(self, part: LlmInputPart) -> dict[str, Any]:
+        if isinstance(part, LlmTextInputPart):
+            return {"type": "text", "text": part.text}
+        if isinstance(part, LlmImageUrlInputPart):
+            return {"type": "image_url", "image_url": {"url": part.url}}
+        raise TypeError(f"Unsupported llm input part: {part!r}")
+
     def chat(
         self,
         *,
@@ -122,6 +142,7 @@ class OpenAICompatibleLlmClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         request_id: str | None = None,
+        input_parts: list[LlmInputPart] | None = None,
     ) -> LlmChatResult:
         target_model = model or self.default_model
         if not self.api_key.strip():
@@ -133,10 +154,18 @@ class OpenAICompatibleLlmClient:
             )
             raise OpenAICompatibleLlmClientError("LLM_API_KEY is not configured")
 
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
         if system_prompt is not None and system_prompt.strip():
             messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        if input_parts:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [self._serialize_input_part(part) for part in input_parts],
+                }
+            )
+        else:
+            messages.append({"role": "user", "content": prompt})
 
         request_payload: dict[str, Any] = {
             "model": target_model,
@@ -265,3 +294,4 @@ def get_openai_compatible_llm_client() -> OpenAICompatibleLlmClient:
         default_model=config.default_model,
         timeout_seconds=config.timeout_seconds,
     )
+
