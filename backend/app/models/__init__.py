@@ -1,4 +1,4 @@
-from .document import Document, DocumentCreate, DocumentRead, DocumentUpdate
+﻿from .document import Document, DocumentCreate, DocumentRead, DocumentUpdate
 from .document_parsing_task import (
     DocumentParsingTask,
     DocumentParsingTaskCreate,
@@ -6,6 +6,11 @@ from .document_parsing_task import (
     DocumentParsingTaskStatus,
 )
 from .extracted_image import ExtractedImage, ExtractedImageCreate, ExtractedImageRead, ExtractedImageUpdate
+from .extracted_image_semantic_task import (
+    ExtractedImageSemanticTask,
+    ExtractedImageSemanticTaskRead,
+    ExtractedImageSemanticTaskStatus,
+)
 from .file_record import FileRecord, FileRecordCreate, FileRecordRead
 from .project import Project, ProjectCreate, ProjectRead, ProjectStatus, ProjectUpdate
 from .project_software_relation import (
@@ -28,6 +33,9 @@ __all__ = [
     "ExtractedImage",
     "ExtractedImageCreate",
     "ExtractedImageRead",
+    "ExtractedImageSemanticTask",
+    "ExtractedImageSemanticTaskRead",
+    "ExtractedImageSemanticTaskStatus",
     "ExtractedImageUpdate",
     "FileRecord",
     "FileRecordCreate",

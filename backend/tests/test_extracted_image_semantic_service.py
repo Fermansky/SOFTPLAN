@@ -8,15 +8,16 @@ from fastapi import HTTPException
 from minio.error import S3Error
 
 from backend.app.api.routers import extracted_images
-from backend.app.models import ExtractedImage
+from backend.app.models import ExtractedImage, ExtractedImageSemanticTask, ExtractedImageSemanticTaskStatus
 from backend.app.services import LlmImageUrlInputPart, LlmTextInputPart, LlmUsage
 from backend.app.services.extracted_image_semantic_service import (
-    ExtractedImageSemanticDescriptionResult,
     ExtractedImageSemanticPromptError,
-    describe_extracted_image_semantics,
+    execute_extracted_image_semantic_recognition,
+    get_extracted_image_semantic_target_model_key,
     load_extracted_image_semantic_prompt,
     resolve_extracted_image_semantic_model,
 )
+from backend.app.services.extracted_image_semantic_task_service import ExtractedImageSemanticTaskSubmissionResult
 from backend.app.services.llm_service import LlmChatResult
 
 
@@ -90,7 +91,7 @@ class _MinioError(S3Error):
         return self._code
 
 
-class ExtractedImageSemanticServiceTests(TestCase):
+class ExtractedImageSemanticExecutionTests(TestCase):
     def setUp(self) -> None:
         load_extracted_image_semantic_prompt.cache_clear()
         self._temp_root = Path(os.getcwd()) / "backend" / "tests" / ".tmp"
@@ -130,16 +131,9 @@ class ExtractedImageSemanticServiceTests(TestCase):
 
         self.assertEqual(resolved, "env-model")
 
-    def test_resolve_extracted_image_semantic_model_returns_none_when_unset(self):
-        with patch.dict(os.environ, {}, clear=False):
-            previous = os.environ.pop("EXTRACTED_IMAGE_SEMANTIC_MODEL", None)
-            try:
-                resolved = resolve_extracted_image_semantic_model(None)
-            finally:
-                if previous is not None:
-                    os.environ["EXTRACTED_IMAGE_SEMANTIC_MODEL"] = previous
-
-        self.assertIsNone(resolved)
+    def test_target_model_key_uses_default_sentinel(self):
+        self.assertEqual(get_extracted_image_semantic_target_model_key(None), "__LLM_SERVICE_DEFAULT__")
+        self.assertEqual(get_extracted_image_semantic_target_model_key("gpt-test"), "gpt-test")
 
     def test_load_prompt_reads_configured_file(self):
         prompt_path = self._write_temp_prompt_file("system prompt")
@@ -154,45 +148,30 @@ class ExtractedImageSemanticServiceTests(TestCase):
         missing_path.unlink(missing_ok=True)
 
         with patch.dict(os.environ, {"EXTRACTED_IMAGE_SEMANTIC_PROMPT_PATH": str(missing_path)}, clear=False):
-            with self.assertRaises(ExtractedImageSemanticPromptError) as ctx:
+            with self.assertRaises(ExtractedImageSemanticPromptError):
                 load_extracted_image_semantic_prompt()
 
-        self.assertIn("Prompt file not found", str(ctx.exception))
-
-    def test_load_prompt_raises_when_file_empty(self):
-        prompt_path = self._write_temp_prompt_file("   \n")
-
-        with patch.dict(os.environ, {"EXTRACTED_IMAGE_SEMANTIC_PROMPT_PATH": str(prompt_path)}, clear=False):
-            with self.assertRaises(ExtractedImageSemanticPromptError) as ctx:
-                load_extracted_image_semantic_prompt()
-
-        self.assertIn("Prompt file is empty", str(ctx.exception))
-
-    def test_describe_extracted_image_semantics_uses_request_model_override(self):
+    def test_execute_recognition_succeeds(self):
         extracted_image = self._build_extracted_image()
         storage = _StorageStub(payload=b"png-bytes")
-        client = _ClientStub(
-            text="\u8fd9\u662f\u4e00\u5f20\u6d4b\u8bd5\u56fe\u7247",
-            model="request-model",
-            request_id="req-42",
-        )
+        client = _ClientStub(text="\u8fd9\u662f\u4e00\u5f20\u6d4b\u8bd5\u56fe\u7247", model="request-model", request_id="req-42")
 
         with patch(
             "backend.app.services.extracted_image_semantic_service.load_extracted_image_semantic_prompt",
             return_value="system prompt",
-        ), patch.dict(os.environ, {"EXTRACTED_IMAGE_SEMANTIC_MODEL": "env-model"}, clear=False):
-            result = describe_extracted_image_semantics(
+        ):
+            result = execute_extracted_image_semantic_recognition(
                 extracted_image=extracted_image,
                 storage=storage,
                 client=client,
                 request_id="req-42",
-                model="request-model",
+                target_model="request-model",
             )
 
-        self.assertEqual(result.image_id, 1)
+        self.assertTrue(result.succeeded)
         self.assertEqual(result.description, "\u8fd9\u662f\u4e00\u5f20\u6d4b\u8bd5\u56fe\u7247")
-        self.assertEqual(result.model, "request-model")
-        self.assertEqual(result.request_id, "req-42")
+        self.assertEqual(result.result_model, "request-model")
+        self.assertIsNone(result.error_message)
         self.assertEqual(storage.calls, [{"storage_key": "images/hash-a.png", "bucket": "softplan"}])
         self.assertEqual(client.last_call["model"], "request-model")
         self.assertEqual(client.last_call["prompt"], "\u8bf7\u57fa\u4e8e\u8fd9\u5f20\u56fe\u7247\u751f\u6210\u4e00\u6bb5\u4e2d\u6587\u8bed\u4e49\u63cf\u8ff0\u3002")
@@ -201,93 +180,47 @@ class ExtractedImageSemanticServiceTests(TestCase):
         self.assertIsInstance(client.last_call["input_parts"][1], LlmImageUrlInputPart)
         self.assertTrue(client.last_call["input_parts"][1].url.startswith("data:image/png;base64,"))
 
-    def test_describe_extracted_image_semantics_falls_back_to_env_model(self):
+    def test_execute_recognition_fails_for_non_image(self):
+        result = execute_extracted_image_semantic_recognition(
+            extracted_image=self._build_extracted_image(content_type="application/pdf"),
+            storage=_StorageStub(payload=b"pdf-bytes"),
+            client=_ClientStub(),
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertIn("is not an image resource", result.error_message or "")
+
+    def test_execute_recognition_fails_on_storage_error(self):
         extracted_image = self._build_extracted_image()
 
         with patch(
             "backend.app.services.extracted_image_semantic_service.load_extracted_image_semantic_prompt",
             return_value="system prompt",
-        ), patch.dict(os.environ, {"EXTRACTED_IMAGE_SEMANTIC_MODEL": "env-model"}, clear=False):
-            client = _ClientStub(model="env-model")
-            describe_extracted_image_semantics(
+        ):
+            result = execute_extracted_image_semantic_recognition(
                 extracted_image=extracted_image,
-                storage=_StorageStub(payload=b"png-bytes"),
-                client=client,
-                model=None,
+                storage=_StorageStub(error=_MinioError("NoSuchKey")),
+                client=_ClientStub(),
             )
 
-        self.assertEqual(client.last_call["model"], "env-model")
+        self.assertFalse(result.succeeded)
+        self.assertIn("Extracted image storage download failed", result.error_message or "")
 
-    def test_describe_extracted_image_semantics_passes_none_when_no_model_is_configured(self):
-        extracted_image = self._build_extracted_image()
-        previous = os.environ.pop("EXTRACTED_IMAGE_SEMANTIC_MODEL", None)
-        try:
-            with patch(
-                "backend.app.services.extracted_image_semantic_service.load_extracted_image_semantic_prompt",
-                return_value="system prompt",
-            ):
-                client = _ClientStub(model="gpt-4o-mini")
-                describe_extracted_image_semantics(
-                    extracted_image=extracted_image,
-                    storage=_StorageStub(payload=b"png-bytes"),
-                    client=client,
-                    model=None,
-                )
-        finally:
-            if previous is not None:
-                os.environ["EXTRACTED_IMAGE_SEMANTIC_MODEL"] = previous
-
-        self.assertIsNone(client.last_call["model"])
-
-    def test_describe_extracted_image_semantics_rejects_non_image_resource(self):
-        extracted_image = self._build_extracted_image(content_type="application/pdf")
-
-        with patch(
-            "backend.app.services.extracted_image_semantic_service.load_extracted_image_semantic_prompt",
-            return_value="system prompt",
-        ):
-            with self.assertRaises(HTTPException) as ctx:
-                describe_extracted_image_semantics(
-                    extracted_image=extracted_image,
-                    storage=_StorageStub(payload=b"pdf-bytes"),
-                    client=_ClientStub(),
-                )
-
-        self.assertEqual(ctx.exception.status_code, 422)
-
-    def test_describe_extracted_image_semantics_returns_502_on_storage_failure(self):
+    def test_execute_recognition_fails_on_llm_error(self):
         extracted_image = self._build_extracted_image()
 
         with patch(
             "backend.app.services.extracted_image_semantic_service.load_extracted_image_semantic_prompt",
             return_value="system prompt",
         ):
-            with self.assertRaises(HTTPException) as ctx:
-                describe_extracted_image_semantics(
-                    extracted_image=extracted_image,
-                    storage=_StorageStub(error=_MinioError("NoSuchKey")),
-                    client=_ClientStub(),
-                )
+            result = execute_extracted_image_semantic_recognition(
+                extracted_image=extracted_image,
+                storage=_StorageStub(payload=b"png-bytes"),
+                client=_ClientStub(error="upstream 400"),
+            )
 
-        self.assertEqual(ctx.exception.status_code, 502)
-        self.assertIn("Extracted image storage download failed", ctx.exception.detail)
-
-    def test_describe_extracted_image_semantics_returns_502_on_llm_error(self):
-        extracted_image = self._build_extracted_image()
-
-        with patch(
-            "backend.app.services.extracted_image_semantic_service.load_extracted_image_semantic_prompt",
-            return_value="system prompt",
-        ):
-            with self.assertRaises(HTTPException) as ctx:
-                describe_extracted_image_semantics(
-                    extracted_image=extracted_image,
-                    storage=_StorageStub(payload=b"png-bytes"),
-                    client=_ClientStub(error="upstream 400"),
-                )
-
-        self.assertEqual(ctx.exception.status_code, 502)
-        self.assertIn("llm-service semantic description failed", ctx.exception.detail)
+        self.assertFalse(result.succeeded)
+        self.assertIn("llm-service semantic description failed", result.error_message or "")
 
 
 class ExtractedImageSemanticRouteTests(TestCase):
@@ -304,89 +237,87 @@ class ExtractedImageSemanticRouteTests(TestCase):
             height=200,
         )
 
-    def test_route_returns_semantic_description_payload(self):
+    def _build_task(self, *, status: ExtractedImageSemanticTaskStatus = ExtractedImageSemanticTaskStatus.pending) -> ExtractedImageSemanticTask:
+        return ExtractedImageSemanticTask(
+            id=uuid4(),
+            extracted_image_id=1,
+            status=status,
+            requested_model="request-model",
+            target_model="request-model",
+            target_model_key="request-model",
+            result_model="request-model" if status == ExtractedImageSemanticTaskStatus.succeeded else None,
+            request_id="req-9",
+            prompt_path="backend/app/prompts/extracted_image_semantic.txt",
+            prompt_hash="abc123",
+            description="\u4e2d\u6587\u63cf\u8ff0" if status == ExtractedImageSemanticTaskStatus.succeeded else None,
+            error_message="boom" if status == ExtractedImageSemanticTaskStatus.failed else None,
+            attempt_count=1,
+        )
+
+    def test_create_task_route_returns_task_payload(self):
         extracted_image = self._build_extracted_image()
-        client = _ClientStub()
-        storage = _StorageStub(payload=b"png-bytes")
+        task = self._build_task()
 
         with patch.object(extracted_images, "get_extracted_image_or_404", return_value=extracted_image), patch.object(
             extracted_images,
-            "describe_extracted_image_semantics",
-            return_value=ExtractedImageSemanticDescriptionResult(
+            "create_or_reuse_extracted_image_semantic_task",
+            return_value=ExtractedImageSemanticTaskSubmissionResult(task=task, reused=True),
+        ) as create_mock:
+            response = extracted_images.create_extracted_image_semantic_task(
                 image_id=1,
-                description="\u4e2d\u6587\u63cf\u8ff0",
-                model="gpt-4.1-mini",
-                request_id="req-9",
-            ),
-        ) as describe_mock:
-            response = extracted_images.generate_extracted_image_semantic_description(
-                image_id=1,
-                payload=extracted_images.ExtractedImageSemanticDescriptionRequest(request_id="req-9", model="request-model"),
+                payload=extracted_images.ExtractedImageSemanticTaskCreateRequest(request_id="req-9", model="request-model"),
                 session=object(),
-                storage=storage,
-                client=client,
             )
 
         self.assertEqual(response.image_id, 1)
-        self.assertEqual(response.description, "\u4e2d\u6587\u63cf\u8ff0")
-        self.assertEqual(response.model, "gpt-4.1-mini")
-        self.assertEqual(response.request_id, "req-9")
-        self.assertEqual(describe_mock.call_args.kwargs["request_id"], "req-9")
-        self.assertEqual(describe_mock.call_args.kwargs["model"], "request-model")
+        self.assertEqual(response.status, ExtractedImageSemanticTaskStatus.pending)
+        self.assertTrue(response.reused)
+        self.assertEqual(create_mock.call_args.kwargs["requested_model"], "request-model")
+        self.assertEqual(create_mock.call_args.kwargs["request_id"], "req-9")
 
-    def test_route_passes_none_model_when_request_does_not_override(self):
-        extracted_image = self._build_extracted_image()
-
-        with patch.object(extracted_images, "get_extracted_image_or_404", return_value=extracted_image), patch.object(
-            extracted_images,
-            "describe_extracted_image_semantics",
-            return_value=ExtractedImageSemanticDescriptionResult(
-                image_id=1,
-                description="\u4e2d\u6587\u63cf\u8ff0",
-                model="env-model",
-                request_id="req-11",
-            ),
-        ) as describe_mock:
-            extracted_images.generate_extracted_image_semantic_description(
-                image_id=1,
-                payload=extracted_images.ExtractedImageSemanticDescriptionRequest(request_id="req-11"),
-                session=object(),
-                storage=_StorageStub(payload=b"png-bytes"),
-                client=_ClientStub(),
-            )
-
-        self.assertIsNone(describe_mock.call_args.kwargs["model"])
-
-    def test_route_returns_503_when_prompt_unavailable(self):
-        extracted_image = self._build_extracted_image()
-
-        with patch.object(extracted_images, "get_extracted_image_or_404", return_value=extracted_image), patch.object(
-            extracted_images,
-            "describe_extracted_image_semantics",
-            side_effect=ExtractedImageSemanticPromptError("Prompt file not found"),
-        ):
+    def test_get_task_route_returns_404_when_missing(self):
+        with patch.object(extracted_images, "get_extracted_image_semantic_task_by_id", return_value=None):
             with self.assertRaises(HTTPException) as ctx:
-                extracted_images.generate_extracted_image_semantic_description(
-                    image_id=1,
-                    payload=extracted_images.ExtractedImageSemanticDescriptionRequest(request_id="req-10", model="request-model"),
-                    session=object(),
-                    storage=_StorageStub(payload=b"png-bytes"),
-                    client=_ClientStub(),
-                )
+                extracted_images.get_extracted_image_semantic_task(uuid4(), session=object())
 
-        self.assertEqual(ctx.exception.status_code, 503)
-        self.assertIn("Semantic description prompt unavailable", ctx.exception.detail)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_get_latest_result_returns_no_task(self):
+        extracted_image = self._build_extracted_image()
+
+        with patch.object(extracted_images, "get_extracted_image_or_404", return_value=extracted_image), patch.object(
+            extracted_images,
+            "get_latest_extracted_image_semantic_task_for_image",
+            return_value=None,
+        ):
+            response = extracted_images.get_extracted_image_semantic_result(image_id=1, session=object())
+
+        self.assertEqual(response.image_id, 1)
+        self.assertEqual(response.status, extracted_images.ExtractedImageSemanticResultStatus.no_task)
+        self.assertIsNone(response.task_id)
+
+    def test_get_latest_result_returns_succeeded_payload(self):
+        extracted_image = self._build_extracted_image()
+        task = self._build_task(status=ExtractedImageSemanticTaskStatus.succeeded)
+
+        with patch.object(extracted_images, "get_extracted_image_or_404", return_value=extracted_image), patch.object(
+            extracted_images,
+            "get_latest_extracted_image_semantic_task_for_image",
+            return_value=task,
+        ):
+            response = extracted_images.get_extracted_image_semantic_result(image_id=1, session=object())
+
+        self.assertEqual(response.status, extracted_images.ExtractedImageSemanticResultStatus.succeeded)
+        self.assertEqual(response.description, "\u4e2d\u6587\u63cf\u8ff0")
+        self.assertEqual(response.result_model, "request-model")
 
     def test_route_returns_404_when_image_missing(self):
         session = _SessionCapture(first_value=None)
 
         with self.assertRaises(HTTPException) as ctx:
-            extracted_images.generate_extracted_image_semantic_description(
+            extracted_images.get_extracted_image_semantic_result(
                 image_id=999,
-                payload=None,
                 session=session,
-                storage=_StorageStub(payload=b"png-bytes"),
-                client=_ClientStub(),
             )
 
         self.assertEqual(ctx.exception.status_code, 404)

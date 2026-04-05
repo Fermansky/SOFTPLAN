@@ -5,12 +5,27 @@
 )
 from .document_upload_service import UploadFileResolution, upload_document_with_dedupe
 from .extracted_image_semantic_service import (
-    ExtractedImageSemanticDescriptionResult,
+    ExtractedImageSemanticExecutionResult,
     ExtractedImageSemanticPromptError,
-    describe_extracted_image_semantics,
+    execute_extracted_image_semantic_recognition,
     get_extracted_image_semantic_model,
+    get_extracted_image_semantic_prompt_snapshot,
+    get_extracted_image_semantic_target_model_key,
     load_extracted_image_semantic_prompt,
     resolve_extracted_image_semantic_model,
+    resolve_extracted_image_semantic_prompt_path,
+)
+from .extracted_image_semantic_task_service import (
+    ExtractedImageSemanticTaskSubmissionResult,
+    create_or_reuse_extracted_image_semantic_task,
+    execute_extracted_image_semantic_task,
+    get_active_extracted_image_semantic_task,
+    get_extracted_image_semantic_task_by_id,
+    get_extracted_image_semantic_task_worker,
+    get_latest_extracted_image_semantic_task_for_image,
+    is_extracted_image_semantic_task_worker_enabled,
+    process_one_pending_extracted_image_semantic_task,
+    recover_orphaned_extracted_image_semantic_tasks,
 )
 from .file_convert_service import (
     FileConvertServiceClient,
@@ -30,8 +45,9 @@ from .minio_storage import MinioStorage, StoredObjectRef, get_minio_storage
 
 __all__ = [
     "DocumentParsingTaskSubmissionResult",
-    "ExtractedImageSemanticDescriptionResult",
+    "ExtractedImageSemanticExecutionResult",
     "ExtractedImageSemanticPromptError",
+    "ExtractedImageSemanticTaskSubmissionResult",
     "FileConvertServiceClient",
     "LlmChatResult",
     "LlmImageUrlInputPart",
@@ -43,14 +59,26 @@ __all__ = [
     "StoredObjectRef",
     "UploadedImageMetadata",
     "UploadFileResolution",
-    "describe_extracted_image_semantics",
+    "create_or_reuse_extracted_image_semantic_task",
+    "execute_extracted_image_semantic_recognition",
+    "execute_extracted_image_semantic_task",
+    "get_active_extracted_image_semantic_task",
     "get_document_parsing_task_worker",
     "get_extracted_image_semantic_model",
+    "get_extracted_image_semantic_prompt_snapshot",
+    "get_extracted_image_semantic_target_model_key",
+    "get_extracted_image_semantic_task_by_id",
+    "get_extracted_image_semantic_task_worker",
     "get_file_convert_service_client",
+    "get_latest_extracted_image_semantic_task_for_image",
     "get_llm_service_client",
     "get_minio_storage",
     "is_document_parsing_task_worker_enabled",
+    "is_extracted_image_semantic_task_worker_enabled",
     "load_extracted_image_semantic_prompt",
+    "process_one_pending_extracted_image_semantic_task",
+    "recover_orphaned_extracted_image_semantic_tasks",
     "resolve_extracted_image_semantic_model",
+    "resolve_extracted_image_semantic_prompt_path",
     "upload_document_with_dedupe",
 ]

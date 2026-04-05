@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import os
 
 from fastapi import FastAPI
@@ -9,7 +9,9 @@ from .database import create_db_and_tables
 from .services import (
     ExtractedImageSemanticPromptError,
     get_document_parsing_task_worker,
+    get_extracted_image_semantic_task_worker,
     is_document_parsing_task_worker_enabled,
+    is_extracted_image_semantic_task_worker_enabled,
     load_extracted_image_semantic_prompt,
 )
 
@@ -21,7 +23,6 @@ def configure_logging() -> None:
     app_logger = logging.getLogger("app")
     app_logger.setLevel(level)
 
-    # Reuse uvicorn's stderr handler so application logs show in container output.
     uvicorn_error_logger = logging.getLogger("uvicorn.error")
     if uvicorn_error_logger.handlers:
         app_logger.handlers = uvicorn_error_logger.handlers
@@ -63,16 +64,28 @@ def create_app() -> FastAPI:
     app.add_event_handler("startup", _log_extracted_image_semantic_prompt_status)
 
     if is_document_parsing_task_worker_enabled():
-        worker = get_document_parsing_task_worker()
+        document_parsing_worker = get_document_parsing_task_worker()
 
         async def _start_document_parsing_task_worker() -> None:
-            await worker.start()
+            await document_parsing_worker.start()
 
         async def _stop_document_parsing_task_worker() -> None:
-            await worker.stop()
+            await document_parsing_worker.stop()
 
         app.add_event_handler("startup", _start_document_parsing_task_worker)
         app.add_event_handler("shutdown", _stop_document_parsing_task_worker)
+
+    if is_extracted_image_semantic_task_worker_enabled():
+        extracted_image_semantic_worker = get_extracted_image_semantic_task_worker()
+
+        async def _start_extracted_image_semantic_task_worker() -> None:
+            await extracted_image_semantic_worker.start()
+
+        async def _stop_extracted_image_semantic_task_worker() -> None:
+            await extracted_image_semantic_worker.stop()
+
+        app.add_event_handler("startup", _start_extracted_image_semantic_task_worker)
+        app.add_event_handler("shutdown", _stop_extracted_image_semantic_task_worker)
 
     app.include_router(api_router)
     return app

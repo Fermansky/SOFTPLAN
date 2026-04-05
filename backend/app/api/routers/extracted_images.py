@@ -1,35 +1,78 @@
 ﻿import logging
+from datetime import datetime
+from enum import Enum
+from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from ..dependencies import get_extracted_image_or_404, get_llm_service_client, get_minio_storage
+from ..dependencies import get_extracted_image_or_404
 from ...database import get_session
-from ...models import ExtractedImage, ExtractedImageCreate, ExtractedImageRead, ExtractedImageUpdate
+from ...models import (
+    ExtractedImage,
+    ExtractedImageCreate,
+    ExtractedImageRead,
+    ExtractedImageSemanticTask,
+    ExtractedImageSemanticTaskStatus,
+    ExtractedImageUpdate,
+)
 from ...services import (
-    ExtractedImageSemanticPromptError,
-    LlmServiceClient,
-    MinioStorage,
-    describe_extracted_image_semantics,
-    resolve_extracted_image_semantic_model,
+    ExtractedImageSemanticTaskSubmissionResult,
+    create_or_reuse_extracted_image_semantic_task,
+    get_extracted_image_semantic_task_by_id,
+    get_latest_extracted_image_semantic_task_for_image,
 )
 
 router = APIRouter(prefix="/extracted-images", tags=["extracted-images"])
 logger = logging.getLogger(__name__)
 
 
-class ExtractedImageSemanticDescriptionRequest(BaseModel):
+class ExtractedImageSemanticTaskCreateRequest(BaseModel):
     request_id: str | None = None
     model: str | None = None
 
 
-class ExtractedImageSemanticDescriptionRead(BaseModel):
+class ExtractedImageSemanticTaskRead(BaseModel):
+    id: UUID
     image_id: int
-    description: str
-    model: str
+    status: ExtractedImageSemanticTaskStatus
+    requested_model: str | None = None
+    target_model: str | None = None
+    result_model: str | None = None
     request_id: str | None = None
+    attempt_count: int
+    reused: bool = False
+    description: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    updated_at: datetime
+
+
+class ExtractedImageSemanticResultStatus(str, Enum):
+    no_task = "no_task"
+    pending = "pending"
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+
+
+class ExtractedImageSemanticImageResultRead(BaseModel):
+    image_id: int
+    status: ExtractedImageSemanticResultStatus
+    task_id: UUID | None = None
+    requested_model: str | None = None
+    target_model: str | None = None
+    result_model: str | None = None
+    description: str | None = None
+    error_message: str | None = None
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 @router.post("", response_model=ExtractedImageRead, status_code=status.HTTP_201_CREATED)
@@ -61,60 +104,71 @@ def list_extracted_images(
     return list(session.exec(statement).all())
 
 
+@router.get("/semantic-description/tasks/{task_id}", response_model=ExtractedImageSemanticTaskRead)
+def get_extracted_image_semantic_task(task_id: UUID, session: Session = Depends(get_session)) -> ExtractedImageSemanticTaskRead:
+    task = get_extracted_image_semantic_task_by_id(session, task_id=task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="extracted image semantic task not found")
+    return _to_task_read(task)
+
+
 @router.get("/{image_id}", response_model=ExtractedImageRead)
 def get_extracted_image(image_id: int, session: Session = Depends(get_session)) -> ExtractedImage:
     return get_extracted_image_or_404(image_id, session)
 
 
-@router.post("/{image_id}/semantic-description", response_model=ExtractedImageSemanticDescriptionRead)
-def generate_extracted_image_semantic_description(
+@router.post(
+    "/{image_id}/semantic-description",
+    response_model=ExtractedImageSemanticTaskRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_extracted_image_semantic_task(
     image_id: int,
-    payload: ExtractedImageSemanticDescriptionRequest | None = Body(default=None),
+    payload: ExtractedImageSemanticTaskCreateRequest | None = Body(default=None),
     session: Session = Depends(get_session),
-    storage: MinioStorage = Depends(get_minio_storage),
-    client: LlmServiceClient = Depends(get_llm_service_client),
-) -> ExtractedImageSemanticDescriptionRead:
+) -> ExtractedImageSemanticTaskRead:
     extracted_image = get_extracted_image_or_404(image_id, session)
     request_id = payload.request_id if payload is not None else None
     requested_model = payload.model if payload is not None else None
-    resolved_model = resolve_extracted_image_semantic_model(requested_model)
 
     logger.info(
-        "Received extracted image semantic description request image_id=%s request_id=%s model=%s has_custom_model=%s",
+        "Received extracted image semantic task submission image_id=%s request_id=%s requested_model=%s",
         image_id,
         request_id,
-        resolved_model or "<default>",
-        bool(requested_model and requested_model.strip()),
+        requested_model or "<default>",
     )
-
     try:
-        result = describe_extracted_image_semantics(
+        submission = create_or_reuse_extracted_image_semantic_task(
+            session,
             extracted_image=extracted_image,
-            storage=storage,
-            client=client,
+            requested_model=requested_model,
             request_id=request_id,
-            model=requested_model,
         )
-    except ExtractedImageSemanticPromptError as exc:
-        logger.warning(
-            "Extracted image semantic prompt unavailable image_id=%s request_id=%s model=%s has_custom_model=%s error=%s",
-            image_id,
-            request_id,
-            resolved_model or "<default>",
-            bool(requested_model and requested_model.strip()),
-            exc,
-        )
+    except IntegrityError as exc:
+        session.rollback()
+        logger.exception("Failed to create extracted image semantic task, image_id=%s", image_id)
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Semantic description prompt unavailable: {exc}",
+            status_code=status.HTTP_409_CONFLICT,
+            detail="extracted image semantic task conflict",
         ) from exc
 
-    return ExtractedImageSemanticDescriptionRead(
-        image_id=result.image_id,
-        description=result.description,
-        model=result.model,
-        request_id=result.request_id,
-    )
+    return _to_task_read(submission.task, reused=submission.reused)
+
+
+@router.get("/{image_id}/semantic-description", response_model=ExtractedImageSemanticImageResultRead)
+def get_extracted_image_semantic_result(
+    image_id: int,
+    session: Session = Depends(get_session),
+) -> ExtractedImageSemanticImageResultRead:
+    extracted_image = get_extracted_image_or_404(image_id, session)
+    task = get_latest_extracted_image_semantic_task_for_image(session, extracted_image_id=extracted_image.id)
+    if task is None:
+        return ExtractedImageSemanticImageResultRead(
+            image_id=extracted_image.id,
+            status=ExtractedImageSemanticResultStatus.no_task,
+        )
+
+    return _to_image_result_read(task)
 
 
 @router.patch("/{image_id}", response_model=ExtractedImageRead)
@@ -147,3 +201,40 @@ def delete_extracted_image(image_id: int, session: Session = Depends(get_session
     session.delete(extracted_image)
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _to_task_read(task: ExtractedImageSemanticTask, *, reused: bool = False) -> ExtractedImageSemanticTaskRead:
+    return ExtractedImageSemanticTaskRead(
+        id=task.id,
+        image_id=task.extracted_image_id,
+        status=task.status,
+        requested_model=task.requested_model,
+        target_model=task.target_model,
+        result_model=task.result_model,
+        request_id=task.request_id,
+        attempt_count=task.attempt_count,
+        reused=reused,
+        description=task.description,
+        error_message=task.error_message,
+        created_at=task.created_at,
+        started_at=task.started_at,
+        finished_at=task.finished_at,
+        updated_at=task.updated_at,
+    )
+
+
+def _to_image_result_read(task: ExtractedImageSemanticTask) -> ExtractedImageSemanticImageResultRead:
+    return ExtractedImageSemanticImageResultRead(
+        image_id=task.extracted_image_id,
+        status=ExtractedImageSemanticResultStatus(task.status.value),
+        task_id=task.id,
+        requested_model=task.requested_model,
+        target_model=task.target_model,
+        result_model=task.result_model if task.status == ExtractedImageSemanticTaskStatus.succeeded else None,
+        description=task.description if task.status == ExtractedImageSemanticTaskStatus.succeeded else None,
+        error_message=task.error_message if task.status == ExtractedImageSemanticTaskStatus.failed else None,
+        created_at=task.created_at,
+        started_at=task.started_at,
+        finished_at=task.finished_at,
+        updated_at=task.updated_at,
+    )
