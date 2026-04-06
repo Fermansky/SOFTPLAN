@@ -1,4 +1,16 @@
-﻿import logging
+﻿"""OpenAI-compatible 上游 LLM 客户端。
+
+职责：
+1. 从环境变量加载上游 LLM 配置并在启动时输出脱敏日志。
+2. 将 llm-service 内部请求转换为 OpenAI-compatible chat completions 请求。
+3. 对上游超时、HTTP 错误、响应结构异常做统一封装，便于路由层映射为 502。
+
+说明：
+- 本模块只负责协议适配和失败语义收敛，不承担业务提示词编排。
+- 所有对外异常统一收敛为 `OpenAICompatibleLlmClientError`。
+"""
+
+import logging
 import os
 from dataclasses import dataclass
 from functools import lru_cache
@@ -12,6 +24,8 @@ _MAX_LOG_BODY_LENGTH = 500
 
 @dataclass(frozen=True)
 class LlmUsage:
+    """上游返回的 token 用量统计。"""
+
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
@@ -19,6 +33,8 @@ class LlmUsage:
 
 @dataclass(frozen=True)
 class LlmChatResult:
+    """标准化后的聊天结果。"""
+
     text: str
     model: str
     usage: LlmUsage
@@ -27,11 +43,15 @@ class LlmChatResult:
 
 @dataclass(frozen=True)
 class LlmTextInputPart:
+    """文本输入块。"""
+
     text: str
 
 
 @dataclass(frozen=True)
 class LlmImageUrlInputPart:
+    """图片 URL 输入块。"""
+
     url: str
 
 
@@ -40,6 +60,8 @@ LlmInputPart = LlmTextInputPart | LlmImageUrlInputPart
 
 @dataclass(frozen=True)
 class OpenAICompatibleLlmConfig:
+    """上游 LLM 配置快照。"""
+
     base_url: str
     api_key: str
     default_model: str
@@ -47,16 +69,20 @@ class OpenAICompatibleLlmConfig:
 
 
 class OpenAICompatibleLlmClientError(RuntimeError):
-    pass
+    """上游 LLM 调用失败或返回结构不符合约定。"""
+
 
 
 def _truncate_for_log(value: str, *, limit: int = _MAX_LOG_BODY_LENGTH) -> str:
+    """截断日志中的大字段，避免响应体过长污染日志。"""
     if len(value) <= limit:
         return value
     return f"{value[:limit]}...(truncated)"
 
 
+
 def load_openai_compatible_llm_config() -> OpenAICompatibleLlmConfig:
+    """从环境变量读取上游 LLM 配置。"""
     return OpenAICompatibleLlmConfig(
         base_url=os.getenv("LLM_API_BASE_URL", "https://api.openai.com/v1"),
         api_key=os.getenv("LLM_API_KEY", ""),
@@ -65,7 +91,13 @@ def load_openai_compatible_llm_config() -> OpenAICompatibleLlmConfig:
     )
 
 
+
 def log_openai_compatible_llm_config(config: OpenAICompatibleLlmConfig | None = None) -> None:
+    """输出脱敏后的上游配置日志。
+
+    约束：
+    - 只记录 `api_key` 是否存在，不输出真实密钥。
+    """
     resolved_config = config or load_openai_compatible_llm_config()
     api_key_present = bool(resolved_config.api_key.strip())
     logger.info(
@@ -82,6 +114,8 @@ def log_openai_compatible_llm_config(config: OpenAICompatibleLlmConfig | None = 
 
 
 class OpenAICompatibleLlmClient:
+    """OpenAI-compatible chat completions 客户端。"""
+
     def __init__(
         self,
         *,
@@ -96,11 +130,18 @@ class OpenAICompatibleLlmClient:
         self.timeout_seconds = timeout_seconds
 
     def _coerce_usage_value(self, value: Any) -> int:
+        """规范化 usage 数值字段，异常值按 0 处理。"""
         if isinstance(value, bool) or not isinstance(value, int):
             return 0
         return value
 
     def _extract_text(self, payload: dict[str, Any]) -> str:
+        """从 OpenAI-compatible 响应中提取文本内容。
+
+        兼容：
+        - 纯字符串 `message.content`
+        - content parts 列表中的 text 片段
+        """
         choices = payload.get("choices")
         if not isinstance(choices, list) or not choices:
             raise OpenAICompatibleLlmClientError(f"Unexpected upstream payload: {payload!r}")
@@ -127,6 +168,7 @@ class OpenAICompatibleLlmClient:
         raise OpenAICompatibleLlmClientError(f"Unexpected upstream payload: {payload!r}")
 
     def _serialize_input_part(self, part: LlmInputPart) -> dict[str, Any]:
+        """将内部输入块转换为上游可接受的多模态 message.content 结构。"""
         if isinstance(part, LlmTextInputPart):
             return {"type": "text", "text": part.text}
         if isinstance(part, LlmImageUrlInputPart):
@@ -144,6 +186,15 @@ class OpenAICompatibleLlmClient:
         request_id: str | None = None,
         input_parts: list[LlmInputPart] | None = None,
     ) -> LlmChatResult:
+        """调用上游 chat completions 接口。
+
+        约束：
+        - `system_prompt` 单独映射为 system message。
+        - 存在 `input_parts` 时按多模态 user message 发送；否则退回纯文本 prompt。
+
+        失败语义：
+        - 缺少 API key、网络异常、HTTP 错误、JSON 结构异常时抛 `OpenAICompatibleLlmClientError`。
+        """
         target_model = model or self.default_model
         if not self.api_key.strip():
             logger.warning(
@@ -158,6 +209,7 @@ class OpenAICompatibleLlmClient:
         if system_prompt is not None and system_prompt.strip():
             messages.append({"role": "system", "content": system_prompt})
         if input_parts:
+            # 多模态请求统一放入单个 user message，保持与 OpenAI-compatible 接口约定一致。
             messages.append(
                 {
                     "role": "user",
@@ -287,6 +339,7 @@ class OpenAICompatibleLlmClient:
 
 @lru_cache(maxsize=1)
 def get_openai_compatible_llm_client() -> OpenAICompatibleLlmClient:
+    """按环境变量构造上游 LLM 客户端单例。"""
     config = load_openai_compatible_llm_config()
     return OpenAICompatibleLlmClient(
         base_url=config.base_url,
@@ -294,4 +347,3 @@ def get_openai_compatible_llm_client() -> OpenAICompatibleLlmClient:
         default_model=config.default_model,
         timeout_seconds=config.timeout_seconds,
     )
-

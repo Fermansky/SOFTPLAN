@@ -1,3 +1,5 @@
+﻿"""backend 顶层 API 路由聚合。"""
+
 from fastapi import APIRouter
 
 from .routers import (

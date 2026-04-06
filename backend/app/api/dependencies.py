@@ -1,3 +1,5 @@
+﻿"""backend API 依赖注入与常用查询辅助。"""
+
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -14,7 +16,9 @@ from ..services import (
 )
 
 
+
 def get_active_project_or_404(project_id: UUID, session: Session) -> Project:
+    """查询未删除项目，不存在则返回 404。"""
     statement = select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
     project = session.exec(statement).first()
     if project is None:
@@ -22,7 +26,9 @@ def get_active_project_or_404(project_id: UUID, session: Session) -> Project:
     return project
 
 
+
 def get_software_or_404(software_id: UUID, session: Session) -> Software:
+    """查询未删除软件，不存在则返回 404。"""
     statement = select(Software).where(Software.id == software_id, Software.deleted_at.is_(None))
     software = session.exec(statement).first()
     if software is None:
@@ -30,7 +36,9 @@ def get_software_or_404(software_id: UUID, session: Session) -> Software:
     return software
 
 
+
 def get_active_document_or_404(document_id: UUID, session: Session) -> Document:
+    """查询未删除文档，不存在则返回 404。"""
     statement = select(Document).where(Document.id == document_id, Document.deleted_at.is_(None))
     document = session.exec(statement).first()
     if document is None:
@@ -38,7 +46,9 @@ def get_active_document_or_404(document_id: UUID, session: Session) -> Document:
     return document
 
 
+
 def get_file_or_404(file_id: UUID, session: Session) -> FileRecord:
+    """查询文件记录，不存在则返回 404。"""
     statement = select(FileRecord).where(FileRecord.id == file_id)
     file_record = session.exec(statement).first()
     if file_record is None:
@@ -46,7 +56,9 @@ def get_file_or_404(file_id: UUID, session: Session) -> FileRecord:
     return file_record
 
 
+
 def get_extracted_image_or_404(image_id: int, session: Session) -> ExtractedImage:
+    """查询提取图片，不存在则返回 404。"""
     statement = select(ExtractedImage).where(ExtractedImage.id == image_id)
     extracted_image = session.exec(statement).first()
     if extracted_image is None:
@@ -54,9 +66,11 @@ def get_extracted_image_or_404(image_id: int, session: Session) -> ExtractedImag
     return extracted_image
 
 
+
 def get_project_software_relation_or_404(
     project_id: UUID, software_id: UUID, session: Session
 ) -> ProjectSoftwareRelation:
+    """查询项目与软件关系，不存在则返回 404。"""
     statement = select(ProjectSoftwareRelation).where(
         ProjectSoftwareRelation.project_id == project_id,
         ProjectSoftwareRelation.software_id == software_id,
@@ -70,13 +84,19 @@ def get_project_software_relation_or_404(
     return relation
 
 
+
 def get_minio_storage() -> MinioStorage:
+    """返回 MinIO 存储依赖。"""
     return get_minio_storage_service()
 
 
+
 def get_file_convert_service_client() -> FileConvertServiceClient:
+    """返回 file-convert-service 客户端依赖。"""
     return get_file_convert_service_client_service()
 
 
+
 def get_llm_service_client() -> LlmServiceClient:
+    """返回 llm-service 客户端依赖。"""
     return get_llm_service_client_service()

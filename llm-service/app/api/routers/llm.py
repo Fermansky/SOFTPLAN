@@ -1,4 +1,16 @@
-﻿import logging
+﻿"""llm-service 聊天路由。
+
+职责：
+1. 校验 `/internal/llm/chat` 请求体。
+2. 将 API 层输入块转换为 service 层输入块。
+3. 记录请求元数据日志，并将上游失败统一映射为 502。
+
+说明：
+- 本模块只负责 HTTP 协议层，不承载上游调用细节。
+- 日志仅记录 request_id、输入规模和模型信息，不记录 prompt 正文或图片内容。
+"""
+
+import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -17,15 +29,21 @@ logger = logging.getLogger(__name__)
 
 
 class LlmChatTextInputPart(BaseModel):
+    """文本输入块。"""
+
     type: Literal["text"]
     text: str = Field(min_length=1)
 
 
 class LlmChatImageUrlValue(BaseModel):
+    """图片 URL 值对象。"""
+
     url: str = Field(min_length=1)
 
 
 class LlmChatImageUrlInputPart(BaseModel):
+    """图片 URL 输入块。"""
+
     type: Literal["image_url"]
     image_url: LlmChatImageUrlValue
 
@@ -34,6 +52,8 @@ LlmChatInputPart = Annotated[LlmChatTextInputPart | LlmChatImageUrlInputPart, Fi
 
 
 class LlmChatRequest(BaseModel):
+    """聊天请求。"""
+
     prompt: str = Field(min_length=1)
     system_prompt: str | None = None
     model: str | None = None
@@ -44,19 +64,25 @@ class LlmChatRequest(BaseModel):
 
 
 class LlmUsageRead(BaseModel):
+    """token 用量响应。"""
+
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
 
 
 class LlmChatRead(BaseModel):
+    """聊天响应。"""
+
     text: str
     model: str
     usage: LlmUsageRead
     request_id: str | None = None
 
 
+
 def _to_service_input_part(part: LlmChatInputPart):
+    """将路由层输入块转换为 service 层输入块。"""
     if isinstance(part, LlmChatTextInputPart):
         return ServiceLlmTextInputPart(text=part.text)
     if isinstance(part, LlmChatImageUrlInputPart):
@@ -69,6 +95,14 @@ def chat(
     payload: LlmChatRequest,
     client: OpenAICompatibleLlmClient = Depends(get_openai_compatible_llm_client),
 ) -> LlmChatRead:
+    """处理内部聊天请求。
+
+    流程：
+    1. 规范化并校验 prompt。
+    2. 统计输入块元数据并记录请求日志。
+    3. 调用上游客户端。
+    4. 失败统一映射为 502。
+    """
     prompt = payload.prompt.strip()
     if not prompt:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="prompt is required")
@@ -128,4 +162,3 @@ def chat(
         ),
         request_id=result.request_id,
     )
-

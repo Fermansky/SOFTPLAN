@@ -1,4 +1,16 @@
-﻿import base64
+﻿"""LLM 代理路由。
+
+职责：
+1. 暴露 backend 对外的 LLM availability 与 chat 接口。
+2. 在聊天场景下复用已落库的 ExtractedImage 作为图片输入。
+3. 将存储层、llm-service 层错误映射为合适的 HTTP 状态码。
+
+说明：
+- 本模块负责 API 编排和错误映射，不直接调用上游 OpenAI-compatible 接口。
+- 图片附件只接受系统内已存在的 `ExtractedImage.id`。
+"""
+
+import base64
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -18,6 +30,8 @@ _MAX_EXTRACTED_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 class LlmAvailabilityRead(BaseModel):
+    """LLM 服务可用性响应。"""
+
     available: bool
     service: str
     health_path: str | None = None
@@ -25,6 +39,8 @@ class LlmAvailabilityRead(BaseModel):
 
 
 class LlmChatRequest(BaseModel):
+    """对外聊天请求。"""
+
     prompt: str = Field(min_length=1)
     system_prompt: str | None = None
     model: str | None = None
@@ -35,12 +51,16 @@ class LlmChatRequest(BaseModel):
 
 
 class LlmUsageRead(BaseModel):
+    """token 用量响应。"""
+
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
 
 
 class LlmChatRead(BaseModel):
+    """聊天响应。"""
+
     text: str
     model: str
     usage: LlmUsageRead
@@ -49,6 +69,7 @@ class LlmChatRead(BaseModel):
 
 @router.get("/availability", response_model=LlmAvailabilityRead)
 def get_llm_availability(client: LlmServiceClient = Depends(get_llm_service_client)) -> LlmAvailabilityRead:
+    """检查 llm-service 存活状态。"""
     logger.info("Checking llm-service availability")
     available, error = client.check_availability()
     if available:
@@ -66,9 +87,12 @@ def get_llm_availability(client: LlmServiceClient = Depends(get_llm_service_clie
     )
 
 
+
 def _to_data_url(payload: bytes, *, content_type: str) -> str:
+    """将图片字节转换为 data URL，供 llm-service 多模态输入复用。"""
     encoded = base64.b64encode(payload).decode("ascii")
     return f"data:{content_type};base64,{encoded}"
+
 
 
 def _build_extracted_image_input_parts(
@@ -77,6 +101,12 @@ def _build_extracted_image_input_parts(
     session: Session,
     storage: MinioStorage,
 ) -> list[LlmImageUrlInputPart]:
+    """将 extracted image 列表转换为聊天附件输入块。
+
+    约束：
+    - 单次请求图片数量和单图大小都受上限保护。
+    - 非图片资源、MinIO 下载失败都会直接映射为 HTTP 异常。
+    """
     if len(extracted_image_ids) > _MAX_EXTRACTED_IMAGES_PER_CHAT:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -128,6 +158,7 @@ def chat(
     session: Session = Depends(get_session),
     storage: MinioStorage = Depends(get_minio_storage),
 ) -> LlmChatRead:
+    """处理对外聊天请求，并在需要时附带已落库图片。"""
     prompt = payload.prompt.strip()
     if not prompt:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="prompt is required")
@@ -140,6 +171,7 @@ def chat(
             session=session,
             storage=storage,
         )
+        # 文本提示词放在首个 text part，保证多模态输入仍保留用户原始问题。
         input_parts = [LlmTextInputPart(text=prompt), *image_input_parts]
 
     logger.info(
@@ -181,4 +213,3 @@ def chat(
         ),
         request_id=result.request_id,
     )
-
