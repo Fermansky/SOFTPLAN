@@ -153,6 +153,26 @@ class ExtractedImageSemanticTaskServiceTests(TestCase):
         self.assertTrue(session.committed)
         self.assertEqual(session.refreshed, [result.task])
 
+    def test_create_or_reuse_task_can_use_resolved_target_model_without_reresolving(self):
+        session = _SessionStub(existing_task=None)
+
+        with patch.object(service, "get_extracted_image_semantic_prompt_snapshot", return_value=("prompt-path", "hash-1")), patch(
+            "backend.app.services.extracted_image_semantic_task_service.resolve_extracted_image_semantic_model",
+            side_effect=AssertionError("should not resolve"),
+        ):
+            result = service.create_or_reuse_extracted_image_semantic_task(
+                session,
+                extracted_image=self._build_image(),
+                requested_model=None,
+                target_model=None,
+                use_target_model=True,
+                request_id="req-2b",
+            )
+
+        self.assertFalse(result.reused)
+        self.assertEqual(result.task.target_model, None)
+        self.assertEqual(result.task.target_model_key, "__LLM_SERVICE_DEFAULT__")
+
     def test_create_or_reuse_task_persists_overwrite_true(self):
         session = _SessionStub(existing_task=None)
 

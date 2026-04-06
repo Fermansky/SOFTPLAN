@@ -1,14 +1,14 @@
-"""文档上传编排服务。
+﻿"""文档上传编排服务。
 
 职责：
-1. 解析上传输入并规范化元数据。
-2. 按文件哈希进行去重复用。
-3. 对“记录存在但对象丢失”的场景执行修复上传。
-4. 处理并发冲突下的回滚与 MinIO 清理。
+1. 解析上传请求并生成标准化的上传输入。
+2. 结合数据库与 MinIO 决定 FileRecord 的新建、Dedup Reuse 与 Missing Object Repair。
+3. 在文档记录创建过程中处理并发冲突后的 Compensation Cleanup。
 
 说明：
-- 本模块是上传路由的业务编排层，路由只负责 HTTP 入参与权限校验。
-- 上传新对象时统一写入文档前缀（documents/）。
+- 本模块负责编排上传链路，但不负责 HTTP 路由参数提取。
+- 文档对象真正落入 MinIO 后，FileRecord 与 Document 的持久化仍以数据库事务结果为准。
+- 文档对象统一存放在 `documents/` 前缀下。
 """
 
 import hashlib
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class UploadInput:
-    """上传输入的规范化结果。"""
+    """上传请求经标准化后的输入快照。"""
 
     file_content: bytes
     content_type: str
@@ -44,10 +44,11 @@ class UploadInput:
 
 @dataclass
 class UploadFileResolution:
-    """文件定位决议。
+    """FileRecord 解析结果。
 
-    - `created_new_file=True`：本次新建了 FileRecord 和 MinIO 对象。
-    - `repaired_existing_file=True`：复用了 FileRecord，但修复了缺失对象。
+    说明：
+    - `created_new_file=True` 表示本次上传新建了 MinIO 对象与 FileRecord。
+    - `repaired_existing_file=True` 表示命中了历史 FileRecord，但其对象缺失并已完成 Missing Object Repair。
     """
 
     file_record: FileRecord
@@ -57,7 +58,11 @@ class UploadFileResolution:
 
 
 def _parse_extra_info(extra_info: str | None) -> dict[str, Any] | None:
-    """解析 extra_info JSON，并保证其为对象类型。"""
+    """解析 extra_info JSON。
+
+    失败语义：
+    - 非法 JSON 或非对象类型时直接转为 422，避免脏结构进入数据库。
+    """
     if extra_info is None or extra_info.strip() == "":
         return None
     try:
@@ -80,15 +85,17 @@ def _parse_extra_info(extra_info: str | None) -> dict[str, Any] | None:
 
 
 def _find_file_by_hash(file_hash: str, session: Session) -> FileRecord | None:
-    """按文件哈希查找已存在文件记录。"""
+    """按文件哈希查找现有 FileRecord。"""
     statement = select(FileRecord).where(FileRecord.file_hash == file_hash)
     return session.exec(statement).first()
 
 
 def _cleanup_uploaded_object(storage: MinioStorage, storage_ref: StoredObjectRef) -> None:
-    """在数据库写入失败时尝试清理刚上传的对象。
+    """执行上传失败后的 Compensation Cleanup。
 
-    这是并发冲突/事务失败场景下的补偿动作，避免无主对象堆积。
+    说明：
+    - 该清理是尽力而为的 Fail-safe，不会覆盖原始数据库错误。
+    - MinIO 清理失败仅记录日志，避免吞掉真正导致事务失败的异常原因。
     """
     try:
         storage.remove_object(storage_ref.storage_key, bucket=storage_ref.bucket)
@@ -106,7 +113,11 @@ async def prepare_upload_input(
     extra_info: str | None,
     upload_file: UploadFile,
 ) -> UploadInput:
-    """读取上传文件并构建规范化输入。"""
+    """读取上传文件并构造标准化输入。
+
+    失败语义：
+    - 上传文件为空时直接返回 400。
+    """
     file_content = await upload_file.read()
     if not file_content:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty")
@@ -133,7 +144,11 @@ def _repair_missing_object_if_needed(
     storage: MinioStorage,
     upload_input: UploadInput,
 ) -> StoredObjectRef | None:
-    """检测并修复“记录存在但对象丢失”的异常状态。"""
+    """在命中历史 FileRecord 但对象缺失时执行 Missing Object Repair。
+
+    副作用：
+    - 若修复成功，会把 FileRecord 更新为新的存储位置与最新元数据。
+    """
     if storage.object_exists(file_record.storage_key, bucket=file_record.storage_bucket):
         return None
 
@@ -150,7 +165,7 @@ def _repair_missing_object_if_needed(
         extension=upload_input.extension,
     )
 
-    # 修复成功后，FileRecord 需指向新的可用对象。
+    # 修复路径下沿用原 FileRecord 主键，只更新它对 MinIO 对象的指向。
     file_record.storage_bucket = repaired_storage_ref.bucket
     file_record.storage_key = repaired_storage_ref.storage_key
     file_record.file_size = len(upload_input.file_content)
@@ -166,7 +181,19 @@ def resolve_file_record(
     upload_input: UploadInput,
     project_id: UUID,
 ) -> UploadFileResolution:
-    """决策文件去重分支：新建 / 复用 / 缺失修复。"""
+    """解析上传对应的 FileRecord。
+
+    约束：
+    - 优先按 `file_hash` 做 Dedup Reuse。
+    - 命中历史记录但对象缺失时执行 Missing Object Repair。
+    - 未命中时才真正上传新对象并准备新建 FileRecord。
+
+    副作用：
+    - 可能调用 MinIO 上传对象。
+
+    失败语义：
+    - MinIO 上传、探测或修复失败时转为 502。
+    """
     file_record = _find_file_by_hash(upload_input.file_hash, session)
     if file_record is None:
         try:
@@ -238,7 +265,15 @@ def persist_document(
     software_id: UUID | None,
     description: str,
 ) -> Document:
-    """持久化文档记录并处理并发冲突补偿。"""
+    """持久化文档记录，并在需要时一并落库 FileRecord。
+
+    副作用：
+    - 会向数据库写入 FileRecord 与 Document。
+    - 在并发冲突导致事务失败时，可能执行 MinIO Compensation Cleanup。
+
+    失败语义：
+    - 数据库唯一约束冲突统一映射为 409。
+    """
     file_record = resolution.file_record
     document = Document(
         file_id=file_record.id,
@@ -255,8 +290,8 @@ def persist_document(
             try:
                 session.flush()
             except IntegrityError:
-                # 并发上传同一文件时，可能在 flush 阶段命中 file_hash 唯一约束。
-                # 处理策略：回滚事务 -> 清理本次对象 -> 复用已存在 FileRecord。
+                # 并发上传相同文件时，其他事务可能已先创建同一 file_hash 的
+                # FileRecord。这里回滚并复用获胜记录，避免留下孤立对象。
                 session.rollback()
                 if resolution.uploaded_storage_ref is not None:
                     _cleanup_uploaded_object(storage, resolution.uploaded_storage_ref)
@@ -267,7 +302,7 @@ def persist_document(
                 file_record = existing_file
                 document.file_id = file_record.id
         elif resolution.repaired_existing_file:
-            # 修复路径下需要更新 FileRecord 的存储定位信息。
+            # 修复路径下需要把 FileRecord 的新对象指向写回数据库。
             session.add(file_record)
 
         session.add(document)
@@ -294,7 +329,13 @@ async def upload_document_with_dedupe(
     extra_info: str | None,
     upload_file: UploadFile,
 ) -> Document:
-    """文档上传主编排：输入准备 -> 文件决议 -> 文档落库。"""
+    """执行完整的文档上传链路。
+
+    流程：
+    1. 读取并规范化上传输入。
+    2. 解析或修复 FileRecord。
+    3. 持久化 Document 与相关 FileRecord。
+    """
     upload_input = await prepare_upload_input(name=name, extra_info=extra_info, upload_file=upload_file)
     resolution = resolve_file_record(
         session=session,
@@ -311,4 +352,3 @@ async def upload_document_with_dedupe(
         software_id=software_id,
         description=description,
     )
-

@@ -1,13 +1,13 @@
 ﻿"""LLM 服务调用客户端。
 
 职责：
-1. 统一封装 backend -> llm-service 的健康检查与聊天请求。
+1. 统一封装 backend 到 llm-service 的健康检查与聊天请求。
 2. 兼容纯文本输入与多模态 input parts 的序列化。
-3. 对 llm-service 响应做最小必要校验，并向上层返回稳定结果结构。
+3. 对 llm-service 响应做最小必要校验，并返回稳定的结果结构。
 
 说明：
 - 本模块只负责 HTTP 协议适配，不承载业务提示词编排。
-- 调用失败统一返回 `(None, error)`，由上层服务决定错误映射策略。
+- 下游调用失败统一返回 `(None, error)`，由上层服务决定错误映射策略。
 """
 
 import os
@@ -22,7 +22,7 @@ from ..core.logging import REQUEST_ID_HEADER, get_request_id
 
 @dataclass(frozen=True)
 class LlmUsage:
-    """llm-service 返回的 token 用量统计。"""
+    """llm-service 返回的 token 使用统计。"""
 
     prompt_tokens: int
     completion_tokens: int
@@ -31,7 +31,7 @@ class LlmUsage:
 
 @dataclass(frozen=True)
 class LlmChatResult:
-    """标准化后的聊天结果。"""
+    """标准化后的 llm-service 聊天结果。"""
 
     text: str
     model: str
@@ -57,18 +57,20 @@ LlmInputPart = LlmTextInputPart | LlmImageUrlInputPart
 
 
 class LlmServiceClient:
-    """llm-service 的轻量客户端。"""
+    """llm-service 轻量客户端。"""
 
     def __init__(self, *, base_url: str, timeout_seconds: float = 30.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
 
     def _coerce_usage_value(self, value: Any) -> int:
+        """把 usage 字段归一化为整数，异常值统一降为 0。"""
         if isinstance(value, bool) or not isinstance(value, int):
             return 0
         return value
 
     def _serialize_input_part(self, part: LlmInputPart) -> dict[str, Any]:
+        """将内部输入块表示转换为 llm-service 请求体格式。"""
         if isinstance(part, LlmTextInputPart):
             return {"type": "text", "text": part.text}
         if isinstance(part, LlmImageUrlInputPart):
@@ -76,6 +78,7 @@ class LlmServiceClient:
         raise TypeError(f"Unsupported llm input part: {part!r}")
 
     def check_availability(self) -> tuple[bool, str | None]:
+        """检查 llm-service 健康状态。"""
         health_url = f"{self.base_url}/health"
         request_id = get_request_id()
         request_headers = {REQUEST_ID_HEADER: request_id} if request_id is not None else None
@@ -102,6 +105,14 @@ class LlmServiceClient:
         request_id: str | None = None,
         input_parts: list[LlmInputPart] | None = None,
     ) -> tuple[LlmChatResult | None, str | None]:
+        """调用 llm-service 聊天接口。
+
+        副作用：
+        - 会发起 HTTP 请求到 llm-service。
+
+        失败语义：
+        - 网络错误、HTTP 错误、响应结构错误统一返回 `(None, error)`。
+        """
         url = f"{self.base_url}/internal/llm/chat"
         resolved_request_id = request_id or get_request_id()
         payload: dict[str, Any] = {"prompt": prompt}

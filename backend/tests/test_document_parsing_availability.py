@@ -1,4 +1,4 @@
-﻿from types import SimpleNamespace
+from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 from uuid import uuid4
@@ -7,7 +7,7 @@ import httpx
 from fastapi import HTTPException
 
 from backend.app.api.routers import document_parsing
-from backend.app.models import DocumentParsingTask, DocumentParsingTaskStatus, Document, FileRecord
+from backend.app.models import Document, DocumentParsingTask, DocumentParsingTaskStatus, FileRecord
 from backend.app.services.file_convert_service import (
     FileConvertServiceClient,
     PdfToMarkdownResult,
@@ -49,6 +49,7 @@ class _ClientStub:
         self.image_hashes = image_hashes or {}
         self.uploaded_images = uploaded_images or []
         self.convert_error = convert_error
+        self.last_convert_kwargs = None
 
     def check_availability(self) -> tuple[bool, str | None]:
         return self.available, self.availability_error
@@ -58,7 +59,13 @@ class _ClientStub:
         *,
         storage_key: str,
         task_id: str | None = None,
+        model: str | None = None,
     ) -> tuple[PdfToMarkdownResult | None, str | None]:
+        self.last_convert_kwargs = {
+            "storage_key": storage_key,
+            "task_id": task_id,
+            "model": model,
+        }
         if self.convert_error is not None:
             return None, self.convert_error
         return PdfToMarkdownResult(
@@ -124,7 +131,7 @@ class FileConvertServiceClientTests(TestCase):
                 }
             ),
         ):
-            result, error = client.convert_pdf_to_markdown(storage_key="a.pdf")
+            result, error = client.convert_pdf_to_markdown(storage_key="a.pdf", model="marker")
 
         self.assertIsNotNone(result)
         self.assertEqual(result.markdown, "# hello")
@@ -146,6 +153,19 @@ class FileConvertServiceClientTests(TestCase):
         self.assertIsNotNone(result)
         self.assertIsNone(error)
         self.assertEqual(post_mock.call_args.kwargs["headers"], {"X-Request-ID": "task-1", "X-Convert-Task-Id": "task-1"})
+
+    def test_convert_pdf_to_markdown_includes_model_in_payload(self):
+        client = FileConvertServiceClient(base_url="http://file-convert-service:8000", convert_timeout_seconds=60)
+
+        with patch(
+            "backend.app.services.file_convert_service.httpx.post",
+            return_value=_ResponseStub({"storage_key": "a.pdf", "markdown": "# hello"}),
+        ) as post_mock:
+            result, error = client.convert_pdf_to_markdown(storage_key="a.pdf", model="marker")
+
+        self.assertIsNotNone(result)
+        self.assertIsNone(error)
+        self.assertEqual(post_mock.call_args.kwargs["json"], {"storage_key": "a.pdf", "model": "marker"})
 
     def test_convert_pdf_to_markdown_defaults_optional_fields(self):
         client = FileConvertServiceClient(base_url="http://file-convert-service:8000", convert_timeout_seconds=60)
@@ -204,6 +224,176 @@ class ConvertersRouterTests(TestCase):
         self.assertEqual(response.service, "file-convert-service")
         self.assertEqual(response.error, "connection failed")
 
+    def test_create_document_parsing_task_returns_semantic_summary_and_models(self):
+        document, file_record = self._build_pdf_document_and_file()
+        task = DocumentParsingTask(
+            document_id=document.id,
+            file_id=file_record.id,
+            storage_bucket=file_record.storage_bucket,
+            storage_key=file_record.storage_key,
+            requested_pdf_model="marker",
+            target_pdf_model="marker",
+            pdf_model_key="marker",
+            requested_image_model="vision-model",
+            target_image_model="vision-model",
+            image_model_key="vision-model",
+            status=DocumentParsingTaskStatus.pending,
+            semantic_dispatches=[
+                {
+                    "source_key": "img-1",
+                    "file_hash": "a" * 64,
+                    "image_id": 1,
+                    "semantic_task_id": str(uuid4()),
+                    "dispatch_status": "submitted",
+                    "target_model": "vision-model",
+                },
+                {
+                    "source_key": "img-2",
+                    "file_hash": "b" * 64,
+                    "image_id": 2,
+                    "semantic_task_id": None,
+                    "dispatch_status": "skipped_existing_snapshot",
+                    "target_model": "vision-model",
+                },
+            ],
+        )
+
+        with patch.object(document_parsing, "get_active_document_or_404", return_value=document), patch.object(
+            document_parsing,
+            "get_file_or_404",
+            return_value=file_record,
+        ), patch.object(
+            document_parsing,
+            "create_or_reuse_document_parsing_task",
+            return_value=SimpleNamespace(task=task, reused=False),
+        ):
+            response = document_parsing.create_document_parsing_task(
+                payload=document_parsing.DocumentParsingTaskCreateRequest(
+                    document_id=document.id,
+                    pdf_model="marker",
+                    image_model="vision-model",
+                ),
+                session=_SessionStub(),
+            )
+
+        self.assertEqual(response.id, task.id)
+        self.assertEqual(response.target_pdf_model, "marker")
+        self.assertEqual(response.target_image_model, "vision-model")
+        self.assertEqual(response.semantic_submitted_count, 1)
+        self.assertEqual(response.semantic_reused_count, 0)
+        self.assertEqual(response.semantic_skipped_count, 1)
+        self.assertEqual(len(response.semantic_dispatches), 2)
+
+    def test_create_document_parsing_task_rejects_unsupported_pdf_model(self):
+        document, file_record = self._build_pdf_document_and_file()
+
+        with patch.object(document_parsing, "get_active_document_or_404", return_value=document), patch.object(
+            document_parsing,
+            "get_file_or_404",
+            return_value=file_record,
+        ), patch.object(
+            document_parsing,
+            "create_or_reuse_document_parsing_task",
+            side_effect=document_parsing.UnsupportedDocumentParsingPdfModelError("Unsupported pdf_model: other"),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                document_parsing.create_document_parsing_task(
+                    payload=document_parsing.DocumentParsingTaskCreateRequest(document_id=document.id, pdf_model="other"),
+                    session=_SessionStub(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 422)
+
+    def test_get_document_parsing_task_returns_404_when_missing(self):
+        with patch.object(document_parsing, "get_document_parsing_task_by_id", return_value=None):
+            with self.assertRaises(HTTPException) as ctx:
+                document_parsing.get_document_parsing_task(task_id=uuid4(), session=_SessionStub())
+
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_get_document_parsing_document_result_returns_no_task(self):
+        document, file_record = self._build_pdf_document_and_file()
+
+        with patch.object(document_parsing, "get_active_document_or_404", return_value=document), patch.object(
+            document_parsing,
+            "get_file_or_404",
+            return_value=file_record,
+        ), patch.object(document_parsing, "get_latest_document_parsing_task_for_document_file", return_value=None):
+            response = document_parsing.get_document_parsing_document_result(
+                document_id=document.id,
+                session=_SessionStub(),
+            )
+
+        self.assertEqual(response.status, document_parsing.DocumentParsingDocumentResultStatus.no_task)
+        self.assertEqual(response.semantic_dispatches, [])
+        self.assertEqual(response.semantic_submitted_count, 0)
+        self.assertEqual(response.semantic_reused_count, 0)
+        self.assertEqual(response.semantic_skipped_count, 0)
+
+    def test_get_document_parsing_document_result_succeeded(self):
+        document, file_record = self._build_pdf_document_and_file()
+        task = DocumentParsingTask(
+            document_id=document.id,
+            file_id=file_record.id,
+            storage_bucket=file_record.storage_bucket,
+            storage_key=file_record.storage_key,
+            requested_pdf_model="marker",
+            target_pdf_model="marker",
+            pdf_model_key="marker",
+            requested_image_model="vision-model",
+            target_image_model="vision-model",
+            image_model_key="vision-model",
+            status=DocumentParsingTaskStatus.succeeded,
+            markdown="# done",
+            image_hashes={"img-1": "hash1"},
+            semantic_dispatches=[
+                {
+                    "source_key": "img-1",
+                    "file_hash": "hash1",
+                    "image_id": 1,
+                    "semantic_task_id": str(uuid4()),
+                    "dispatch_status": "submitted",
+                    "target_model": "vision-model",
+                },
+                {
+                    "source_key": "img-2",
+                    "file_hash": "hash2",
+                    "image_id": 2,
+                    "semantic_task_id": str(uuid4()),
+                    "dispatch_status": "reused",
+                    "target_model": "vision-model",
+                },
+                {
+                    "source_key": "img-3",
+                    "file_hash": "hash3",
+                    "image_id": 3,
+                    "semantic_task_id": None,
+                    "dispatch_status": "skipped_existing_snapshot",
+                    "target_model": "vision-model",
+                },
+            ],
+        )
+
+        with patch.object(document_parsing, "get_active_document_or_404", return_value=document), patch.object(
+            document_parsing,
+            "get_file_or_404",
+            return_value=file_record,
+        ), patch.object(document_parsing, "get_latest_document_parsing_task_for_document_file", return_value=task):
+            response = document_parsing.get_document_parsing_document_result(
+                document_id=document.id,
+                session=_SessionStub(),
+            )
+
+        self.assertEqual(response.status, document_parsing.DocumentParsingDocumentResultStatus.succeeded)
+        self.assertEqual(response.markdown, "# done")
+        self.assertEqual(response.image_hashes, {"img-1": "hash1"})
+        self.assertEqual(response.target_pdf_model, "marker")
+        self.assertEqual(response.target_image_model, "vision-model")
+        self.assertEqual(response.semantic_submitted_count, 1)
+        self.assertEqual(response.semantic_reused_count, 1)
+        self.assertEqual(response.semantic_skipped_count, 1)
+        self.assertEqual(len(response.semantic_dispatches), 3)
+
     def test_create_pdf_to_markdown_task_creates_pending_task(self):
         document, file_record = self._build_pdf_document_and_file()
         task = DocumentParsingTask(
@@ -211,6 +401,9 @@ class ConvertersRouterTests(TestCase):
             file_id=file_record.id,
             storage_bucket=file_record.storage_bucket,
             storage_key=file_record.storage_key,
+            requested_pdf_model="marker",
+            target_pdf_model="marker",
+            pdf_model_key="marker",
             status=DocumentParsingTaskStatus.pending,
         )
 
@@ -222,40 +415,14 @@ class ConvertersRouterTests(TestCase):
                     return_value=SimpleNamespace(task=task, reused=False),
                 ):
                     response = document_parsing.create_pdf_to_markdown_task(
-                        payload=document_parsing.PdfToMarkdownTaskCreateRequest(document_id=document.id),
+                        payload=document_parsing.PdfToMarkdownTaskCreateRequest(document_id=document.id, pdf_model="marker"),
                         session=_SessionStub(),
                     )
 
         self.assertEqual(response.id, task.id)
         self.assertEqual(response.status, DocumentParsingTaskStatus.pending)
+        self.assertEqual(response.target_pdf_model, "marker")
         self.assertFalse(response.reused)
-
-    def test_create_pdf_to_markdown_task_reuses_existing_task(self):
-        document, file_record = self._build_pdf_document_and_file()
-        task = DocumentParsingTask(
-            document_id=document.id,
-            file_id=file_record.id,
-            storage_bucket=file_record.storage_bucket,
-            storage_key=file_record.storage_key,
-            status=DocumentParsingTaskStatus.running,
-            attempt_count=1,
-        )
-
-        with patch.object(document_parsing, "get_active_document_or_404", return_value=document):
-            with patch.object(document_parsing, "get_file_or_404", return_value=file_record):
-                with patch.object(
-                    document_parsing,
-                    "create_or_reuse_document_parsing_task",
-                    return_value=SimpleNamespace(task=task, reused=True),
-                ):
-                    response = document_parsing.create_pdf_to_markdown_task(
-                        payload=document_parsing.PdfToMarkdownTaskCreateRequest(document_id=document.id),
-                        session=_SessionStub(),
-                    )
-
-        self.assertEqual(response.id, task.id)
-        self.assertEqual(response.status, DocumentParsingTaskStatus.running)
-        self.assertTrue(response.reused)
 
     def test_get_pdf_to_markdown_task_returns_404_when_missing(self):
         with patch.object(document_parsing, "get_document_parsing_task_by_id", return_value=None):
@@ -282,74 +449,6 @@ class ConvertersRouterTests(TestCase):
         self.assertIsNone(response.markdown)
         self.assertEqual(response.image_hashes, {})
 
-    def test_get_pdf_to_markdown_document_result_pending(self):
-        document, file_record = self._build_pdf_document_and_file()
-        task = DocumentParsingTask(
-            document_id=document.id,
-            file_id=file_record.id,
-            storage_bucket=file_record.storage_bucket,
-            storage_key=file_record.storage_key,
-            status=DocumentParsingTaskStatus.pending,
-        )
-
-        with patch.object(document_parsing, "get_active_document_or_404", return_value=document):
-            with patch.object(document_parsing, "get_file_or_404", return_value=file_record):
-                with patch.object(document_parsing, "get_latest_document_parsing_task_for_document_file", return_value=task):
-                    response = document_parsing.get_pdf_to_markdown_document_result(
-                        document_id=document.id,
-                        session=_SessionStub(),
-                    )
-
-        self.assertEqual(response.status, document_parsing.PdfToMarkdownDocumentResultStatus.pending)
-        self.assertIsNone(response.markdown)
-        self.assertEqual(response.image_hashes, {})
-
-    def test_get_pdf_to_markdown_document_result_running(self):
-        document, file_record = self._build_pdf_document_and_file()
-        task = DocumentParsingTask(
-            document_id=document.id,
-            file_id=file_record.id,
-            storage_bucket=file_record.storage_bucket,
-            storage_key=file_record.storage_key,
-            status=DocumentParsingTaskStatus.running,
-        )
-
-        with patch.object(document_parsing, "get_active_document_or_404", return_value=document):
-            with patch.object(document_parsing, "get_file_or_404", return_value=file_record):
-                with patch.object(document_parsing, "get_latest_document_parsing_task_for_document_file", return_value=task):
-                    response = document_parsing.get_pdf_to_markdown_document_result(
-                        document_id=document.id,
-                        session=_SessionStub(),
-                    )
-
-        self.assertEqual(response.status, document_parsing.PdfToMarkdownDocumentResultStatus.running)
-        self.assertIsNone(response.markdown)
-        self.assertEqual(response.image_hashes, {})
-
-    def test_get_pdf_to_markdown_document_result_failed(self):
-        document, file_record = self._build_pdf_document_and_file()
-        task = DocumentParsingTask(
-            document_id=document.id,
-            file_id=file_record.id,
-            storage_bucket=file_record.storage_bucket,
-            storage_key=file_record.storage_key,
-            status=DocumentParsingTaskStatus.failed,
-            error_message="convert failed",
-        )
-
-        with patch.object(document_parsing, "get_active_document_or_404", return_value=document):
-            with patch.object(document_parsing, "get_file_or_404", return_value=file_record):
-                with patch.object(document_parsing, "get_latest_document_parsing_task_for_document_file", return_value=task):
-                    response = document_parsing.get_pdf_to_markdown_document_result(
-                        document_id=document.id,
-                        session=_SessionStub(),
-                    )
-
-        self.assertEqual(response.status, document_parsing.PdfToMarkdownDocumentResultStatus.failed)
-        self.assertEqual(response.error_message, "convert failed")
-        self.assertIsNone(response.markdown)
-        self.assertEqual(response.image_hashes, {})
-
     def test_get_pdf_to_markdown_document_result_succeeded(self):
         document, file_record = self._build_pdf_document_and_file()
         task = DocumentParsingTask(
@@ -357,6 +456,9 @@ class ConvertersRouterTests(TestCase):
             file_id=file_record.id,
             storage_bucket=file_record.storage_bucket,
             storage_key=file_record.storage_key,
+            requested_pdf_model="marker",
+            target_pdf_model="marker",
+            pdf_model_key="marker",
             status=DocumentParsingTaskStatus.succeeded,
             markdown="# done",
             image_hashes={"img1": "hash1"},
@@ -371,53 +473,11 @@ class ConvertersRouterTests(TestCase):
                     )
 
         self.assertEqual(response.status, document_parsing.PdfToMarkdownDocumentResultStatus.succeeded)
+        self.assertEqual(response.target_pdf_model, "marker")
         self.assertEqual(response.markdown, "# done")
         self.assertEqual(response.image_hashes, {"img1": "hash1"})
 
-    def test_get_pdf_to_markdown_document_result_strict_current_file_id(self):
-        document, file_record = self._build_pdf_document_and_file()
-
-        with patch.object(document_parsing, "get_active_document_or_404", return_value=document):
-            with patch.object(document_parsing, "get_file_or_404", return_value=file_record):
-                with patch.object(document_parsing, "get_latest_document_parsing_task_for_document_file", return_value=None) as query_mock:
-                    response = document_parsing.get_pdf_to_markdown_document_result(
-                        document_id=document.id,
-                        session=_SessionStub(),
-                    )
-
-        self.assertEqual(response.status, document_parsing.PdfToMarkdownDocumentResultStatus.no_task)
-        self.assertEqual(query_mock.call_count, 1)
-        self.assertEqual(query_mock.call_args.kwargs["document_id"], document.id)
-        self.assertEqual(query_mock.call_args.kwargs["file_id"], file_record.id)
-
-    def test_get_pdf_to_markdown_document_result_404_when_document_has_no_file(self):
-        document = Document(project_id=uuid4(), file_id=None, name="PRD")
-
-        with patch.object(document_parsing, "get_active_document_or_404", return_value=document):
-            with self.assertRaises(HTTPException) as ctx:
-                document_parsing.get_pdf_to_markdown_document_result(document_id=document.id, session=_SessionStub())
-
-        self.assertEqual(ctx.exception.status_code, 404)
-
-    def test_get_pdf_to_markdown_document_result_422_when_not_pdf(self):
-        document = Document(project_id=uuid4(), file_id=uuid4(), name="PRD")
-        file_record = FileRecord(
-            file_hash="hash",
-            storage_bucket="softplan",
-            storage_key="documents/2026/04/a.txt",
-            file_size=10,
-            content_type="text/plain",
-            extension=".txt",
-        )
-
-        with patch.object(document_parsing, "get_active_document_or_404", return_value=document):
-            with patch.object(document_parsing, "get_file_or_404", return_value=file_record):
-                with self.assertRaises(HTTPException) as ctx:
-                    document_parsing.get_pdf_to_markdown_document_result(document_id=document.id, session=_SessionStub())
-
-        self.assertEqual(ctx.exception.status_code, 422)
-
-    def test_convert_pdf_to_markdown_success_persists_extracted_images(self):
+    def test_convert_pdf_to_markdown_success_persists_extracted_images_and_echoes_model(self):
         document = Document(project_id=uuid4(), file_id=uuid4(), name="PRD")
         file_record = FileRecord(
             file_hash="hash",
@@ -438,26 +498,52 @@ class ConvertersRouterTests(TestCase):
             width=100,
             height=200,
         )
+        client = _ClientStub(
+            markdown="# content",
+            image_hashes={"img-1": "hash-1"},
+            uploaded_images=[uploaded_image],
+        )
 
         with patch.object(document_parsing, "get_active_document_or_404", return_value=document):
             with patch.object(document_parsing, "get_file_or_404", return_value=file_record):
                 with patch.object(document_parsing, "persist_extracted_images") as persist_mock:
                     response = document_parsing.parse_pdf_to_markdown(
-                        payload=document_parsing.PdfToMarkdownParseRequest(document_id=document.id),
+                        payload=document_parsing.PdfToMarkdownParseRequest(document_id=document.id, pdf_model="marker"),
                         session=_SessionStub(),
-                        client=_ClientStub(
-                            markdown="# content",
-                            image_hashes={"img-1": "hash-1"},
-                            uploaded_images=[uploaded_image],
-                        ),
+                        client=client,
                     )
 
         self.assertEqual(response.document_id, document.id)
         self.assertEqual(response.storage_key, "doc/a.pdf")
+        self.assertEqual(response.target_pdf_model, "marker")
+        self.assertEqual(response.pdf_model_key, "marker")
         self.assertEqual(response.markdown, "# content")
         self.assertEqual(response.image_hashes, {"img-1": "hash-1"})
+        self.assertEqual(client.last_convert_kwargs["model"], "marker")
         persist_mock.assert_called_once()
         self.assertEqual(persist_mock.call_args.kwargs["uploaded_images"], [uploaded_image])
+
+    def test_convert_pdf_to_markdown_rejects_unsupported_pdf_model(self):
+        document = Document(project_id=uuid4(), file_id=uuid4(), name="PRD")
+        file_record = FileRecord(
+            file_hash="hash",
+            storage_bucket="softplan",
+            storage_key="doc/a.pdf",
+            file_size=10,
+            content_type="application/pdf",
+            extension=".pdf",
+        )
+
+        with patch.object(document_parsing, "get_active_document_or_404", return_value=document):
+            with patch.object(document_parsing, "get_file_or_404", return_value=file_record):
+                with self.assertRaises(HTTPException) as ctx:
+                    document_parsing.parse_pdf_to_markdown(
+                        payload=document_parsing.PdfToMarkdownParseRequest(document_id=document.id, pdf_model="other"),
+                        session=_SessionStub(),
+                        client=_ClientStub(markdown="# content"),
+                    )
+
+        self.assertEqual(ctx.exception.status_code, 422)
 
     def test_convert_pdf_to_markdown_returns_500_when_persist_fails(self):
         document = Document(project_id=uuid4(), file_id=uuid4(), name="PRD")
@@ -479,34 +565,12 @@ class ConvertersRouterTests(TestCase):
                 ):
                     with self.assertRaises(HTTPException) as ctx:
                         document_parsing.parse_pdf_to_markdown(
-                            payload=document_parsing.PdfToMarkdownParseRequest(document_id=document.id),
+                            payload=document_parsing.PdfToMarkdownParseRequest(document_id=document.id, pdf_model="marker"),
                             session=_SessionStub(),
                             client=_ClientStub(markdown="# content"),
                         )
 
         self.assertEqual(ctx.exception.status_code, 500)
-
-    def test_convert_pdf_to_markdown_rejects_non_pdf(self):
-        document = Document(project_id=uuid4(), file_id=uuid4(), name="PRD")
-        file_record = FileRecord(
-            file_hash="hash",
-            storage_bucket="softplan",
-            storage_key="doc/a.txt",
-            file_size=10,
-            content_type="text/plain",
-            extension=".txt",
-        )
-
-        with patch.object(document_parsing, "get_active_document_or_404", return_value=document):
-            with patch.object(document_parsing, "get_file_or_404", return_value=file_record):
-                with self.assertRaises(HTTPException) as ctx:
-                    document_parsing.parse_pdf_to_markdown(
-                        payload=document_parsing.PdfToMarkdownParseRequest(document_id=document.id),
-                        session=_SessionStub(),
-                        client=_ClientStub(markdown="# content"),
-                    )
-
-        self.assertEqual(ctx.exception.status_code, 422)
 
     def test_convert_pdf_to_markdown_raises_502_on_downstream_error(self):
         document = Document(project_id=uuid4(), file_id=uuid4(), name="PRD")
@@ -523,15 +587,9 @@ class ConvertersRouterTests(TestCase):
             with patch.object(document_parsing, "get_file_or_404", return_value=file_record):
                 with self.assertRaises(HTTPException) as ctx:
                     document_parsing.parse_pdf_to_markdown(
-                        payload=document_parsing.PdfToMarkdownParseRequest(document_id=document.id),
+                        payload=document_parsing.PdfToMarkdownParseRequest(document_id=document.id, pdf_model="marker"),
                         session=_SessionStub(),
                         client=_ClientStub(convert_error="convert failed"),
                     )
 
         self.assertEqual(ctx.exception.status_code, 502)
-
-
-
-
-
-

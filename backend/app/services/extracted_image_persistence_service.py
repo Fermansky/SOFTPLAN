@@ -1,8 +1,12 @@
-"""提取图片元数据落库服务。
+﻿"""抽取图片元数据持久化服务。
 
 职责：
-- 将 file-convert-service 返回的图片元数据批量写入 extracted_images。
-- 以 file_hash 做全局去重，冲突时静默复用。
+1. 将 file-convert-service 返回的图片元数据批量落库到 extracted_images。
+2. 以 `file_hash` 作为唯一键执行 Dedup Reuse。
+
+说明：
+- 本模块只负责元数据持久化，不负责语义解析任务分发。
+- 冲突时采用 `ON CONFLICT(file_hash) DO NOTHING`，由后续查询阶段复用现有记录。
 """
 
 import logging
@@ -19,16 +23,21 @@ logger = logging.getLogger(__name__)
 
 
 class ExtractedImagePersistenceError(RuntimeError):
-    """图片元数据持久化失败。"""
+    """抽取图片元数据持久化失败。"""
 
 
 
 def persist_extracted_images(session: Session, *, uploaded_images: Sequence[UploadedImageMetadata]) -> None:
-    """批量持久化提取图片元数据。
+    """批量落库抽取图片元数据。
 
     约束：
-    - 使用 `ON CONFLICT(file_hash) DO NOTHING` 保证幂等。
-    - 非冲突类数据库异常统一回滚并抛出业务异常。
+    - 按 `file_hash` 去重，冲突时忽略新行，不中断主流程。
+
+    副作用：
+    - 会提交当前数据库事务。
+
+    失败语义：
+    - 任意数据库错误都会回滚并转为 `ExtractedImagePersistenceError`。
     """
     if not uploaded_images:
         return
@@ -57,4 +66,3 @@ def persist_extracted_images(session: Session, *, uploaded_images: Sequence[Uplo
         session.rollback()
         logger.exception("Failed to persist extracted images, count=%s", len(uploaded_images))
         raise ExtractedImagePersistenceError("Failed to persist extracted images") from exc
-

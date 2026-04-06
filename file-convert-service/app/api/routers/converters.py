@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from minio.error import S3Error
@@ -11,9 +11,12 @@ from ..dependencies import get_marker_pdf_to_markdown_converter, get_minio_stora
 router = APIRouter(prefix="/internal/converters", tags=["converters"])
 logger = logging.getLogger(__name__)
 
+_SUPPORTED_PDF_MODEL = "marker"
+
 
 class ConvertPdfToMarkdownRequest(BaseModel):
     storage_key: str
+    model: str | None = None
 
 
 class UploadedImageRead(BaseModel):
@@ -35,6 +38,20 @@ class ConvertPdfToMarkdownRead(BaseModel):
     uploaded_images: list[UploadedImageRead] = Field(default_factory=list)
 
 
+def _resolve_pdf_model(model: str | None) -> str:
+    if model is None:
+        return _SUPPORTED_PDF_MODEL
+    normalized_model = model.strip().lower()
+    if not normalized_model:
+        return _SUPPORTED_PDF_MODEL
+    if normalized_model != _SUPPORTED_PDF_MODEL:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unsupported model: {model.strip()}. Only '{_SUPPORTED_PDF_MODEL}' is supported",
+        )
+    return _SUPPORTED_PDF_MODEL
+
+
 @router.post("/pdf-to-markdown", response_model=ConvertPdfToMarkdownRead)
 def convert_pdf_to_markdown_from_storage(
     payload: ConvertPdfToMarkdownRequest,
@@ -51,6 +68,8 @@ def convert_pdf_to_markdown_from_storage(
     if not storage_key.lower().endswith(".pdf"):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Only PDF file is supported")
 
+    target_model = _resolve_pdf_model(payload.model)
+
     if not storage.object_exists(storage_key):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File object not found")
 
@@ -61,6 +80,7 @@ def convert_pdf_to_markdown_from_storage(
             request_id=request_id,
             task_id=trace_task_id,
             storage_key=storage_key,
+            model=target_model,
             request_header=request.headers.get(REQUEST_ID_HEADER),
         ),
     )
@@ -75,6 +95,7 @@ def convert_pdf_to_markdown_from_storage(
                 request_id=request_id,
                 task_id=trace_task_id,
                 storage_key=storage_key,
+                model=target_model,
                 error_code=exc.code,
             ),
         )
@@ -92,6 +113,7 @@ def convert_pdf_to_markdown_from_storage(
                 "pdf_to_markdown.converter_unavailable",
                 request_id=request_id,
                 task_id=trace_task_id,
+                model=target_model,
             ),
         )
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
@@ -103,6 +125,7 @@ def convert_pdf_to_markdown_from_storage(
                 request_id=request_id,
                 task_id=trace_task_id,
                 storage_key=storage_key,
+                model=target_model,
             ),
         )
         raise HTTPException(
@@ -117,6 +140,7 @@ def convert_pdf_to_markdown_from_storage(
             request_id=request_id,
             task_id=trace_task_id,
             storage_key=storage_key,
+            model=target_model,
             uploaded_image_count=len(convert_result.uploaded_images),
         ),
     )

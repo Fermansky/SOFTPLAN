@@ -1,5 +1,7 @@
-﻿from .document import Document, DocumentCreate, DocumentRead, DocumentUpdate
+from .document import Document, DocumentCreate, DocumentRead, DocumentUpdate
 from .document_parsing_task import (
+    DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY,
+    DEFAULT_DOCUMENT_PARSING_PDF_MODEL,
     DocumentParsingTask,
     DocumentParsingTaskCreate,
     DocumentParsingTaskRead,
@@ -22,6 +24,8 @@ from .project_software_relation import (
 from .software import Software, SoftwareCreate, SoftwareRead, SoftwareUpdate
 
 __all__ = [
+    "DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY",
+    "DEFAULT_DOCUMENT_PARSING_PDF_MODEL",
     "Document",
     "DocumentCreate",
     "DocumentRead",
