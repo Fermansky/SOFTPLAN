@@ -107,6 +107,20 @@ class LlmServiceClientTests(TestCase):
         self.assertTrue(available)
         self.assertIsNone(error)
 
+    def test_check_availability_forwards_request_id_header(self):
+        client = LlmServiceClient(base_url="http://llm-service:8000", timeout_seconds=3.0)
+
+        with patch("backend.app.services.llm_service.get_request_id", return_value="req-health-1"):
+            with patch(
+                "backend.app.services.llm_service.httpx.get",
+                return_value=_ResponseStub({"status": "ok"}),
+            ) as get_mock:
+                available, error = client.check_availability()
+
+        self.assertTrue(available)
+        self.assertIsNone(error)
+        self.assertEqual(get_mock.call_args.kwargs["headers"], {"X-Request-ID": "req-health-1"})
+
     def test_chat_parses_payload(self):
         client = LlmServiceClient(base_url="http://llm-service:8000", timeout_seconds=3.0)
 
@@ -163,6 +177,28 @@ class LlmServiceClientTests(TestCase):
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
         )
 
+    def test_chat_forwards_request_id_header(self):
+        client = LlmServiceClient(base_url="http://llm-service:8000", timeout_seconds=3.0)
+
+        with patch("backend.app.services.llm_service.get_request_id", return_value="req-chain-1"):
+            with patch(
+                "backend.app.services.llm_service.httpx.post",
+                return_value=_ResponseStub(
+                    {
+                        "text": "hello",
+                        "model": "gpt-test",
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+                        "request_id": "req-chain-1",
+                    }
+                ),
+            ) as post_mock:
+                result, error = client.chat(prompt="hello")
+
+        self.assertIsNone(error)
+        self.assertIsNotNone(result)
+        self.assertEqual(post_mock.call_args.kwargs["headers"], {"X-Request-ID": "req-chain-1"})
+        self.assertEqual(post_mock.call_args.kwargs["json"]["request_id"], "req-chain-1")
+
     def test_chat_returns_error_on_http_error(self):
         client = LlmServiceClient(base_url="http://llm-service:8000", timeout_seconds=3.0)
 
@@ -210,6 +246,15 @@ class LlmRouterTests(TestCase):
         self.assertEqual(response.usage.completion_tokens, 20)
         self.assertEqual(response.usage.total_tokens, 30)
         self.assertEqual(response.request_id, "req-1")
+
+    def test_chat_uses_context_request_id_when_payload_omits_it(self):
+        with patch.object(llm_router, "get_request_id", return_value="req-context-1"):
+            response = llm_router.chat(
+                payload=llm_router.LlmChatRequest(prompt="hello"),
+                client=_ClientStub(text="world", request_id="req-context-1"),
+            )
+
+        self.assertEqual(response.request_id, "req-context-1")
 
     def test_chat_builds_input_parts_from_extracted_images(self):
         client = _ClientStub(text="world")
@@ -305,4 +350,3 @@ class LlmRouterTests(TestCase):
             )
 
         self.assertEqual(ctx.exception.status_code, 502)
-

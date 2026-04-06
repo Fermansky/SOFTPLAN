@@ -1,4 +1,4 @@
-from types import SimpleNamespace
+﻿from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 from uuid import uuid4
@@ -145,7 +145,7 @@ class FileConvertServiceClientTests(TestCase):
 
         self.assertIsNotNone(result)
         self.assertIsNone(error)
-        self.assertEqual(post_mock.call_args.kwargs["headers"], {"X-Convert-Task-Id": "task-1"})
+        self.assertEqual(post_mock.call_args.kwargs["headers"], {"X-Request-ID": "task-1", "X-Convert-Task-Id": "task-1"})
 
     def test_convert_pdf_to_markdown_defaults_optional_fields(self):
         client = FileConvertServiceClient(base_url="http://file-convert-service:8000", convert_timeout_seconds=60)
@@ -529,6 +529,7 @@ class ConvertersRouterTests(TestCase):
                     )
 
         self.assertEqual(ctx.exception.status_code, 502)
+
 
 
 

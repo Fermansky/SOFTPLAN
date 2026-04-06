@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api import api_router
+from .core.logging import build_log_extra, configure_logging, install_request_id_middleware
 from .database import create_db_and_tables
 from .services import (
     ExtractedImageSemanticPromptError,
@@ -16,40 +17,21 @@ from .services import (
 )
 
 
-def configure_logging() -> None:
-    level_name = os.getenv("APP_LOG_LEVEL", os.getenv("LOG_LEVEL", "INFO")).upper()
-    level = getattr(logging, level_name, logging.INFO)
-
-    app_logger = logging.getLogger("app")
-    app_logger.setLevel(level)
-
-    uvicorn_error_logger = logging.getLogger("uvicorn.error")
-    if uvicorn_error_logger.handlers:
-        app_logger.handlers = uvicorn_error_logger.handlers
-        app_logger.propagate = False
-        return
-
-    root_logger = logging.getLogger()
-    if root_logger.handlers:
-        root_logger.setLevel(level)
-    else:
-        logging.basicConfig(
-            level=level,
-            format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-        )
-
-
 def _log_extracted_image_semantic_prompt_status() -> None:
     logger = logging.getLogger("app")
     try:
         load_extracted_image_semantic_prompt()
     except ExtractedImageSemanticPromptError as exc:
-        logger.warning("Extracted image semantic prompt is unavailable: %s", exc)
+        logger.warning(
+            "Extracted image semantic prompt is unavailable",
+            extra=build_log_extra("extracted_image_semantic.prompt.unavailable", error=str(exc)),
+        )
 
 
 def create_app() -> FastAPI:
-    configure_logging()
+    configure_logging("backend")
     app = FastAPI(title="Softplan API", version="0.1.0")
+    install_request_id_middleware(app)
 
     allowed_origins = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:3000,http://localhost:3001")
     app.add_middleware(

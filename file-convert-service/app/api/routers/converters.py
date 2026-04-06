@@ -1,11 +1,12 @@
-import logging
+﻿import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from minio.error import S3Error
 from pydantic import BaseModel, Field
 
-from ..dependencies import get_marker_pdf_to_markdown_converter, get_minio_storage
+from ...core.logging import LEGACY_REQUEST_ID_HEADER, REQUEST_ID_HEADER, build_log_extra, get_request_id
 from ...services import MarkerPdfToMarkdownConverter, MinioStorage
+from ..dependencies import get_marker_pdf_to_markdown_converter, get_minio_storage
 
 router = APIRouter(prefix="/internal/converters", tags=["converters"])
 logger = logging.getLogger(__name__)
@@ -41,7 +42,8 @@ def convert_pdf_to_markdown_from_storage(
     storage: MinioStorage = Depends(get_minio_storage),
     converter: MarkerPdfToMarkdownConverter = Depends(get_marker_pdf_to_markdown_converter),
 ) -> ConvertPdfToMarkdownRead:
-    trace_task_id = request.headers.get("X-Convert-Task-Id")
+    request_id = get_request_id()
+    trace_task_id = request.headers.get(LEGACY_REQUEST_ID_HEADER) or request_id
 
     storage_key = payload.storage_key.strip()
     if not storage_key:
@@ -53,15 +55,29 @@ def convert_pdf_to_markdown_from_storage(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File object not found")
 
     logger.info(
-        "Start PDF to markdown conversion, storage_key=%s, task_id=%s",
-        storage_key,
-        trace_task_id,
+        "Start PDF to markdown conversion",
+        extra=build_log_extra(
+            "pdf_to_markdown.started",
+            request_id=request_id,
+            task_id=trace_task_id,
+            storage_key=storage_key,
+            request_header=request.headers.get(REQUEST_ID_HEADER),
+        ),
     )
 
     try:
         pdf_payload = storage.download_bytes(storage_key)
     except S3Error as exc:
-        logger.exception("Failed to download PDF from MinIO, storage_key=%s, task_id=%s", storage_key, trace_task_id)
+        logger.exception(
+            "Failed to download PDF from MinIO",
+            extra=build_log_extra(
+                "pdf_to_markdown.download_failed",
+                request_id=request_id,
+                task_id=trace_task_id,
+                storage_key=storage_key,
+                error_code=exc.code,
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"MinIO download failed: {exc.code}",
@@ -70,20 +86,39 @@ def convert_pdf_to_markdown_from_storage(
     try:
         convert_result = converter.convert(pdf_payload)
     except RuntimeError as exc:
-        logger.exception("Marker converter is unavailable, task_id=%s", trace_task_id)
+        logger.exception(
+            "Marker converter is unavailable",
+            extra=build_log_extra(
+                "pdf_to_markdown.converter_unavailable",
+                request_id=request_id,
+                task_id=trace_task_id,
+            ),
+        )
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except Exception as exc:
-        logger.exception("Failed to convert PDF to markdown, storage_key=%s, task_id=%s", storage_key, trace_task_id)
+        logger.exception(
+            "Failed to convert PDF to markdown",
+            extra=build_log_extra(
+                "pdf_to_markdown.failed",
+                request_id=request_id,
+                task_id=trace_task_id,
+                storage_key=storage_key,
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"PDF conversion failed: {exc}",
         ) from exc
 
     logger.info(
-        "Finished PDF to markdown conversion, storage_key=%s, task_id=%s, images=%s",
-        storage_key,
-        trace_task_id,
-        len(convert_result.uploaded_images),
+        "Finished PDF to markdown conversion",
+        extra=build_log_extra(
+            "pdf_to_markdown.succeeded",
+            request_id=request_id,
+            task_id=trace_task_id,
+            storage_key=storage_key,
+            uploaded_image_count=len(convert_result.uploaded_images),
+        ),
     )
 
     return ConvertPdfToMarkdownRead(

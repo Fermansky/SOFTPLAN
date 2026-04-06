@@ -20,11 +20,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
-from ..dependencies import (
-    get_active_document_or_404,
-    get_file_convert_service_client,
-    get_file_or_404,
-)
+from ...core.logging import build_log_extra
 from ...database import get_session
 from ...models import DocumentParsingTask, DocumentParsingTaskStatus, FileRecord
 from ...services import FileConvertServiceClient
@@ -37,14 +33,17 @@ from ...services.extracted_image_persistence_service import (
     ExtractedImagePersistenceError,
     persist_extracted_images,
 )
+from ..dependencies import (
+    get_active_document_or_404,
+    get_file_convert_service_client,
+    get_file_or_404,
+)
 
 router = APIRouter(prefix="/document-parsing", tags=["document-parsing"])
 logger = logging.getLogger(__name__)
 
 
 class DocumentParsingAvailabilityRead(BaseModel):
-    """文档解析服务可用性响应。"""
-
     available: bool
     service: str
     health_path: str | None = None
@@ -52,14 +51,10 @@ class DocumentParsingAvailabilityRead(BaseModel):
 
 
 class PdfToMarkdownParseRequest(BaseModel):
-    """同步 PDF 解析请求。"""
-
     document_id: UUID
 
 
 class PdfToMarkdownParseRead(BaseModel):
-    """同步 PDF 解析响应。"""
-
     document_id: UUID
     storage_key: str
     markdown: str
@@ -67,14 +62,10 @@ class PdfToMarkdownParseRead(BaseModel):
 
 
 class PdfToMarkdownTaskCreateRequest(BaseModel):
-    """异步 PDF 解析任务提交请求。"""
-
     document_id: UUID
 
 
 class PdfToMarkdownTaskRead(BaseModel):
-    """异步 PDF 解析任务响应。"""
-
     id: UUID
     document_id: UUID
     file_id: UUID
@@ -93,8 +84,6 @@ class PdfToMarkdownTaskRead(BaseModel):
 
 
 class PdfToMarkdownDocumentResultStatus(str, Enum):
-    """按文档查询解析结果时的聚合状态。"""
-
     no_task = "no_task"
     pending = "pending"
     running = "running"
@@ -103,8 +92,6 @@ class PdfToMarkdownDocumentResultStatus(str, Enum):
 
 
 class PdfToMarkdownDocumentResultRead(BaseModel):
-    """按文档查询最新解析结果的响应。"""
-
     document_id: UUID
     file_id: UUID
     status: PdfToMarkdownDocumentResultStatus
@@ -119,9 +106,7 @@ class PdfToMarkdownDocumentResultRead(BaseModel):
     updated_at: datetime | None = None
 
 
-
 def _resolve_pdf_file_record(document_id: UUID, session: Session) -> tuple[UUID, FileRecord]:
-    """解析并校验某个文档关联的 PDF 文件记录。"""
     document = get_active_document_or_404(document_id, session)
     if document.file_id is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document file not found")
@@ -133,9 +118,7 @@ def _resolve_pdf_file_record(document_id: UUID, session: Session) -> tuple[UUID,
     return document.id, file_record
 
 
-
 def _to_task_read(task: DocumentParsingTask, *, reused: bool = False) -> PdfToMarkdownTaskRead:
-    """将任务模型转换为 API 响应。"""
     return PdfToMarkdownTaskRead(
         id=task.id,
         document_id=task.document_id,
@@ -159,8 +142,6 @@ def _to_task_read(task: DocumentParsingTask, *, reused: bool = False) -> PdfToMa
 def get_document_parsing_availability(
     client: FileConvertServiceClient = Depends(get_file_convert_service_client),
 ) -> DocumentParsingAvailabilityRead:
-    """检查 file-convert-service 存活状态。"""
-    logger.info("Checking file-convert-service availability")
     available, error = client.check_availability()
     if available:
         return DocumentParsingAvailabilityRead(
@@ -169,7 +150,10 @@ def get_document_parsing_availability(
             health_path="/health",
         )
 
-    logger.warning("file-convert-service is unavailable: %s", error)
+    logger.warning(
+        "file-convert-service is unavailable",
+        extra=build_log_extra("document_parsing.availability.unavailable", error=error),
+    )
     return DocumentParsingAvailabilityRead(
         available=False,
         service="file-convert-service",
@@ -182,7 +166,6 @@ def create_pdf_to_markdown_task(
     payload: PdfToMarkdownTaskCreateRequest,
     session: Session = Depends(get_session),
 ) -> PdfToMarkdownTaskRead:
-    """提交 PDF 解析异步任务。"""
     document_id, file_record = _resolve_pdf_file_record(payload.document_id, session)
 
     try:
@@ -195,15 +178,31 @@ def create_pdf_to_markdown_task(
         )
     except IntegrityError as exc:
         session.rollback()
-        logger.exception("Failed to create document parsing task, document_id=%s", payload.document_id)
+        logger.exception(
+            "Failed to create document parsing task",
+            extra=build_log_extra(
+                "document_parsing.task_create.failed",
+                document_id=str(payload.document_id),
+                file_id=str(file_record.id),
+            ),
+        )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="document parsing task conflict") from exc
 
+    logger.info(
+        "Document parsing task submitted",
+        extra=build_log_extra(
+            "document_parsing.task_create.succeeded",
+            document_id=str(document_id),
+            file_id=str(file_record.id),
+            task_id=str(submission.task.id),
+            reused=submission.reused,
+        ),
+    )
     return _to_task_read(submission.task, reused=submission.reused)
 
 
 @router.get("/pdf-to-markdown/tasks/{task_id}", response_model=PdfToMarkdownTaskRead)
 def get_pdf_to_markdown_task(task_id: UUID, session: Session = Depends(get_session)) -> PdfToMarkdownTaskRead:
-    """按任务 ID 查询 PDF 解析任务。"""
     task = get_document_parsing_task_by_id(session, task_id=task_id)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document parsing task not found")
@@ -215,7 +214,6 @@ def get_pdf_to_markdown_document_result(
     document_id: UUID,
     session: Session = Depends(get_session),
 ) -> PdfToMarkdownDocumentResultRead:
-    """按文档查询最新一次解析任务状态。"""
     resolved_document_id, file_record = _resolve_pdf_file_record(document_id, session)
 
     task = get_latest_document_parsing_task_for_document_file(
@@ -255,16 +253,18 @@ def parse_pdf_to_markdown(
     session: Session = Depends(get_session),
     client: FileConvertServiceClient = Depends(get_file_convert_service_client),
 ) -> PdfToMarkdownParseRead:
-    """同步调用 file-convert-service 执行 PDF 转 Markdown。"""
     document_id, file_record = _resolve_pdf_file_record(payload.document_id, session)
 
     parsing_result, error = client.convert_pdf_to_markdown(storage_key=file_record.storage_key)
     if error is not None:
         logger.warning(
-            "file-convert-service parsing failed, document_id=%s, storage_key=%s, error=%s",
-            payload.document_id,
-            file_record.storage_key,
-            error,
+            "file-convert-service parsing failed",
+            extra=build_log_extra(
+                "document_parsing.sync.failed",
+                document_id=str(payload.document_id),
+                storage_key=file_record.storage_key,
+                error=error,
+            ),
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -273,19 +273,30 @@ def parse_pdf_to_markdown(
 
     if parsing_result is not None:
         try:
-            # 同步解析链路也会落库 extracted_images，保证后续图片语义识别和聊天复用一致。
             persist_extracted_images(session, uploaded_images=parsing_result.uploaded_images)
         except ExtractedImagePersistenceError as exc:
             logger.exception(
-                "Failed to persist extracted images after document parsing, document_id=%s, storage_key=%s",
-                payload.document_id,
-                file_record.storage_key,
+                "Failed to persist extracted images after document parsing",
+                extra=build_log_extra(
+                    "document_parsing.persist_extracted_images.failed",
+                    document_id=str(payload.document_id),
+                    storage_key=file_record.storage_key,
+                ),
             )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to persist extracted images",
             ) from exc
 
+    logger.info(
+        "Document parsing finished",
+        extra=build_log_extra(
+            "document_parsing.sync.succeeded",
+            document_id=str(document_id),
+            storage_key=file_record.storage_key,
+            extracted_image_count=len(parsing_result.uploaded_images if parsing_result is not None else []),
+        ),
+    )
     return PdfToMarkdownParseRead(
         document_id=document_id,
         storage_key=file_record.storage_key,

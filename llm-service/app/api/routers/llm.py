@@ -16,13 +16,14 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from ..dependencies import get_openai_compatible_llm_client
+from ...core.logging import build_log_extra, get_request_id
 from ...services import (
     LlmImageUrlInputPart as ServiceLlmImageUrlInputPart,
     LlmTextInputPart as ServiceLlmTextInputPart,
     OpenAICompatibleLlmClient,
     OpenAICompatibleLlmClientError,
 )
+from ..dependencies import get_openai_compatible_llm_client
 
 router = APIRouter(prefix="/internal/llm", tags=["llm"])
 logger = logging.getLogger(__name__)
@@ -80,9 +81,7 @@ class LlmChatRead(BaseModel):
     request_id: str | None = None
 
 
-
 def _to_service_input_part(part: LlmChatInputPart):
-    """将路由层输入块转换为 service 层输入块。"""
     if isinstance(part, LlmChatTextInputPart):
         return ServiceLlmTextInputPart(text=part.text)
     if isinstance(part, LlmChatImageUrlInputPart):
@@ -95,27 +94,24 @@ def chat(
     payload: LlmChatRequest,
     client: OpenAICompatibleLlmClient = Depends(get_openai_compatible_llm_client),
 ) -> LlmChatRead:
-    """处理内部聊天请求。
-
-    流程：
-    1. 规范化并校验 prompt。
-    2. 统计输入块元数据并记录请求日志。
-    3. 调用上游客户端。
-    4. 失败统一映射为 502。
-    """
+    """处理内部聊天请求。"""
     prompt = payload.prompt.strip()
     if not prompt:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="prompt is required")
 
     input_parts = payload.input_parts or []
     image_part_count = sum(1 for part in input_parts if isinstance(part, LlmChatImageUrlInputPart))
+    resolved_request_id = payload.request_id or get_request_id()
     logger.info(
-        "Handling llm chat request request_id=%s prompt_length=%s has_custom_model=%s input_part_count=%s image_part_count=%s",
-        payload.request_id,
-        len(prompt),
-        bool(payload.model),
-        len(input_parts),
-        image_part_count,
+        "Handling llm chat request",
+        extra=build_log_extra(
+            "llm.chat.started",
+            request_id=resolved_request_id,
+            prompt_length=len(prompt),
+            has_custom_model=bool(payload.model),
+            input_part_count=len(input_parts),
+            image_part_count=image_part_count,
+        ),
     )
 
     try:
@@ -125,18 +121,21 @@ def chat(
             model=payload.model,
             temperature=payload.temperature,
             max_tokens=payload.max_tokens,
-            request_id=payload.request_id,
+            request_id=resolved_request_id,
             input_parts=[_to_service_input_part(part) for part in input_parts] if input_parts else None,
         )
     except OpenAICompatibleLlmClientError as exc:
         logger.warning(
-            "LLM chat request failed request_id=%s prompt_length=%s has_custom_model=%s input_part_count=%s image_part_count=%s error=%s",
-            payload.request_id,
-            len(prompt),
-            bool(payload.model),
-            len(input_parts),
-            image_part_count,
-            exc,
+            "LLM chat request failed",
+            extra=build_log_extra(
+                "llm.chat.failed",
+                request_id=resolved_request_id,
+                prompt_length=len(prompt),
+                has_custom_model=bool(payload.model),
+                input_part_count=len(input_parts),
+                image_part_count=image_part_count,
+                error=str(exc),
+            ),
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -144,12 +143,15 @@ def chat(
         ) from exc
 
     logger.info(
-        "LLM chat request succeeded request_id=%s response_model=%s total_tokens=%s input_part_count=%s image_part_count=%s",
-        result.request_id,
-        result.model,
-        result.usage.total_tokens,
-        len(input_parts),
-        image_part_count,
+        "LLM chat request succeeded",
+        extra=build_log_extra(
+            "llm.chat.succeeded",
+            request_id=result.request_id,
+            response_model=result.model,
+            total_tokens=result.usage.total_tokens,
+            input_part_count=len(input_parts),
+            image_part_count=image_part_count,
+        ),
     )
 
     return LlmChatRead(

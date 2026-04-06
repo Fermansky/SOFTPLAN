@@ -38,6 +38,10 @@ class LlmServiceRouterTests(TestCase):
     def setUp(self) -> None:
         get_openai_compatible_llm_client.cache_clear()
         self._env = {
+            "APP_ENV": "test",
+            "APP_LOG_LEVEL": "INFO",
+            "APP_LOG_FORMAT": "console",
+            "APP_LOG_ACCESS_ENABLED": "true",
             "LLM_API_BASE_URL": "https://example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_DEFAULT_MODEL": "gpt-test",
@@ -50,6 +54,19 @@ class LlmServiceRouterTests(TestCase):
     def tearDown(self) -> None:
         get_openai_compatible_llm_client.cache_clear()
         self._patcher.stop()
+
+    def test_health_reuses_request_id_header(self):
+        response = self.client.get("/health", headers={"X-Request-ID": "req-health-1"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["X-Request-ID"], "req-health-1")
+
+    def test_health_generates_request_id_header(self):
+        response = self.client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("X-Request-ID", response.headers)
+        self.assertTrue(response.headers["X-Request-ID"])
 
     def test_chat_returns_text_model_usage_and_request_id(self):
         with patch(
@@ -67,6 +84,7 @@ class LlmServiceRouterTests(TestCase):
             response = self.client.post(
                 "/internal/llm/chat",
                 json={"prompt": "Say hello", "request_id": "req-user-1"},
+                headers={"X-Request-ID": "req-header-local"},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -78,6 +96,7 @@ class LlmServiceRouterTests(TestCase):
             {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
         )
         self.assertEqual(payload["request_id"], "req-user-1")
+        self.assertEqual(response.headers["X-Request-ID"], "req-header-local")
 
     def test_chat_sends_multimodal_input_parts_to_upstream(self):
         with patch(
@@ -111,6 +130,28 @@ class LlmServiceRouterTests(TestCase):
             upstream_payload["messages"][0]["content"][1],
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
         )
+
+    def test_chat_forwards_request_id_header_to_upstream(self):
+        with patch(
+            "app.services.llm_client.httpx.post",
+            return_value=_ResponseStub(
+                {
+                    "id": "chatcmpl-1",
+                    "model": "gpt-test",
+                    "choices": [{"message": {"content": "hello world"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+                },
+                headers={"x-request-id": "req-header-1"},
+            ),
+        ) as post_mock:
+            response = self.client.post(
+                "/internal/llm/chat",
+                json={"prompt": "hello"},
+                headers={"X-Request-ID": "req-chain-1"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(post_mock.call_args.kwargs["headers"]["X-Request-ID"], "req-chain-1")
 
     def test_chat_returns_422_when_prompt_is_blank_after_strip(self):
         response = self.client.post("/internal/llm/chat", json={"prompt": "   "})
@@ -165,7 +206,7 @@ class LlmServiceRouterTests(TestCase):
         self.assertEqual(response.status_code, 502)
         self.assertIn("LLM_API_KEY is not configured", response.json()["detail"])
         self.assertTrue(
-            any("request_id=req-missing-key" in message for message in captured_logs.output),
+            any("LLM upstream request aborted" in message for message in captured_logs.output),
             captured_logs.output,
         )
 
@@ -181,11 +222,6 @@ class LlmServiceRouterTests(TestCase):
             captured_logs.output,
         )
         self.assertTrue(
-            any("api_key_present=False" in message for message in captured_logs.output),
-            captured_logs.output,
-        )
-        self.assertTrue(
             any("LLM_API_KEY is not configured" in message for message in captured_logs.output),
             captured_logs.output,
         )
-

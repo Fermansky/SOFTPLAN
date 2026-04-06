@@ -17,6 +17,8 @@ from typing import Any
 
 import httpx
 
+from ..core.logging import REQUEST_ID_HEADER, get_request_id
+
 
 @dataclass(frozen=True)
 class LlmUsage:
@@ -55,29 +57,18 @@ LlmInputPart = LlmTextInputPart | LlmImageUrlInputPart
 
 
 class LlmServiceClient:
-    """llm-service 的轻量客户端。
-
-    约束：
-    - 仅负责组装内部 HTTP 请求，不处理业务级重试或降级。
-    - 对响应字段做保守校验，避免上游异常 payload 污染业务流程。
-    """
+    """llm-service 的轻量客户端。"""
 
     def __init__(self, *, base_url: str, timeout_seconds: float = 30.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
 
     def _coerce_usage_value(self, value: Any) -> int:
-        """规范化 usage 数值字段。
-
-        失败语义：
-        - 非整数值不抛错，统一按 0 处理，避免 usage 异常影响主流程。
-        """
         if isinstance(value, bool) or not isinstance(value, int):
             return 0
         return value
 
     def _serialize_input_part(self, part: LlmInputPart) -> dict[str, Any]:
-        """将内部输入块类型转换为 llm-service 可接受的 JSON 结构。"""
         if isinstance(part, LlmTextInputPart):
             return {"type": "text", "text": part.text}
         if isinstance(part, LlmImageUrlInputPart):
@@ -85,17 +76,11 @@ class LlmServiceClient:
         raise TypeError(f"Unsupported llm input part: {part!r}")
 
     def check_availability(self) -> tuple[bool, str | None]:
-        """检查 llm-service 存活状态。
-
-        副作用：
-        - 发起一次 `/health` HTTP GET 请求。
-
-        失败语义：
-        - 网络异常、非 2xx、返回体不符合约定时，返回 `(False, error)`。
-        """
         health_url = f"{self.base_url}/health"
+        request_id = get_request_id()
+        request_headers = {REQUEST_ID_HEADER: request_id} if request_id is not None else None
         try:
-            response = httpx.get(health_url, timeout=self.timeout_seconds)
+            response = httpx.get(health_url, headers=request_headers, timeout=self.timeout_seconds)
             response.raise_for_status()
             payload = response.json()
         except Exception as exc:
@@ -117,19 +102,8 @@ class LlmServiceClient:
         request_id: str | None = None,
         input_parts: list[LlmInputPart] | None = None,
     ) -> tuple[LlmChatResult | None, str | None]:
-        """调用 llm-service 的内部聊天接口。
-
-        约束：
-        - `prompt` 始终保留，兼容旧的纯文本调用链路。
-        - `input_parts` 存在时会追加为多模态输入，不改变其余字段语义。
-
-        副作用：
-        - 发起一次 `POST /internal/llm/chat` 请求。
-
-        失败语义：
-        - 网络异常、HTTP 错误、JSON 结构不符合约定时，返回 `(None, error)`。
-        """
         url = f"{self.base_url}/internal/llm/chat"
+        resolved_request_id = request_id or get_request_id()
         payload: dict[str, Any] = {"prompt": prompt}
         if system_prompt is not None:
             payload["system_prompt"] = system_prompt
@@ -139,13 +113,14 @@ class LlmServiceClient:
             payload["temperature"] = temperature
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
-        if request_id is not None:
-            payload["request_id"] = request_id
+        if resolved_request_id is not None:
+            payload["request_id"] = resolved_request_id
         if input_parts is not None:
             payload["input_parts"] = [self._serialize_input_part(part) for part in input_parts]
 
+        request_headers = {REQUEST_ID_HEADER: resolved_request_id} if resolved_request_id is not None else None
         try:
-            response = httpx.post(url, json=payload, timeout=self.timeout_seconds)
+            response = httpx.post(url, json=payload, headers=request_headers, timeout=self.timeout_seconds)
             response.raise_for_status()
             data = response.json()
         except Exception as exc:
@@ -157,14 +132,14 @@ class LlmServiceClient:
         text = data.get("text")
         resolved_model = data.get("model")
         usage_payload = data.get("usage")
-        resolved_request_id = data.get("request_id")
+        response_request_id = data.get("request_id")
         if not isinstance(text, str):
             return None, f"Unexpected llm-service payload: {data!r}"
         if not isinstance(resolved_model, str):
             return None, f"Unexpected llm-service payload: {data!r}"
         if not isinstance(usage_payload, dict):
             return None, f"Unexpected llm-service payload: {data!r}"
-        if resolved_request_id is not None and not isinstance(resolved_request_id, str):
+        if response_request_id is not None and not isinstance(response_request_id, str):
             return None, f"Unexpected llm-service payload: {data!r}"
 
         usage = LlmUsage(
@@ -177,7 +152,7 @@ class LlmServiceClient:
             text=text,
             model=resolved_model,
             usage=usage,
-            request_id=resolved_request_id,
+            request_id=response_request_id,
         ), None
 
 

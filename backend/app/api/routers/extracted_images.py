@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from ..dependencies import get_extracted_image_or_404
+from ...core.logging import build_log_extra, get_request_id
 from ...database import get_session
 from ...models import (
     ExtractedImage,
@@ -27,26 +27,22 @@ from ...models import (
     ExtractedImageUpdate,
 )
 from ...services import (
-    ExtractedImageSemanticTaskSubmissionResult,
     create_or_reuse_extracted_image_semantic_task,
     get_extracted_image_semantic_task_by_id,
     get_latest_extracted_image_semantic_task_for_image,
 )
+from ..dependencies import get_extracted_image_or_404
 
 router = APIRouter(prefix="/extracted-images", tags=["extracted-images"])
 logger = logging.getLogger(__name__)
 
 
 class ExtractedImageSemanticTaskCreateRequest(BaseModel):
-    """图片语义识别任务提交请求。"""
-
     request_id: str | None = None
     model: str | None = None
 
 
 class ExtractedImageSemanticTaskRead(BaseModel):
-    """图片语义识别任务响应。"""
-
     id: UUID
     image_id: int
     status: ExtractedImageSemanticTaskStatus
@@ -65,8 +61,6 @@ class ExtractedImageSemanticTaskRead(BaseModel):
 
 
 class ExtractedImageSemanticResultStatus(str, Enum):
-    """按图片查询结果时的聚合状态。"""
-
     no_task = "no_task"
     pending = "pending"
     running = "running"
@@ -75,8 +69,6 @@ class ExtractedImageSemanticResultStatus(str, Enum):
 
 
 class ExtractedImageSemanticImageResultRead(BaseModel):
-    """按图片查询最新语义识别结果的响应。"""
-
     image_id: int
     status: ExtractedImageSemanticResultStatus
     task_id: UUID | None = None
@@ -96,7 +88,6 @@ def create_extracted_image(
     payload: ExtractedImageCreate,
     session: Session = Depends(get_session),
 ) -> ExtractedImage:
-    """创建一条 ExtractedImage 记录。"""
     extracted_image = ExtractedImage(**payload.model_dump())
     session.add(extracted_image)
     try:
@@ -117,14 +108,12 @@ def list_extracted_images(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[ExtractedImage]:
-    """分页列出提取图片。"""
     statement = select(ExtractedImage).order_by(ExtractedImage.created_at.desc()).offset(offset).limit(limit)
     return list(session.exec(statement).all())
 
 
 @router.get("/semantic-description/tasks/{task_id}", response_model=ExtractedImageSemanticTaskRead)
 def get_extracted_image_semantic_task(task_id: UUID, session: Session = Depends(get_session)) -> ExtractedImageSemanticTaskRead:
-    """按任务 ID 查询图片语义识别任务。"""
     task = get_extracted_image_semantic_task_by_id(session, task_id=task_id)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="extracted image semantic task not found")
@@ -133,7 +122,6 @@ def get_extracted_image_semantic_task(task_id: UUID, session: Session = Depends(
 
 @router.get("/{image_id}", response_model=ExtractedImageRead)
 def get_extracted_image(image_id: int, session: Session = Depends(get_session)) -> ExtractedImage:
-    """按 ID 查询单张提取图片。"""
     return get_extracted_image_or_404(image_id, session)
 
 
@@ -147,20 +135,18 @@ def create_extracted_image_semantic_task(
     payload: ExtractedImageSemanticTaskCreateRequest | None = Body(default=None),
     session: Session = Depends(get_session),
 ) -> ExtractedImageSemanticTaskRead:
-    """提交图片语义识别异步任务。
-
-    约束：
-    - 若同图同模型已有活动任务，任务服务会直接复用该任务。
-    """
     extracted_image = get_extracted_image_or_404(image_id, session)
-    request_id = payload.request_id if payload is not None else None
+    request_id = (payload.request_id if payload is not None else None) or get_request_id()
     requested_model = payload.model if payload is not None else None
 
     logger.info(
-        "Received extracted image semantic task submission image_id=%s request_id=%s requested_model=%s",
-        image_id,
-        request_id,
-        requested_model or "<default>",
+        "Received extracted image semantic task submission",
+        extra=build_log_extra(
+            "extracted_image.semantic_task_create.started",
+            image_id=image_id,
+            request_id=request_id,
+            requested_model=requested_model or "<default>",
+        ),
     )
     try:
         submission = create_or_reuse_extracted_image_semantic_task(
@@ -171,12 +157,29 @@ def create_extracted_image_semantic_task(
         )
     except IntegrityError as exc:
         session.rollback()
-        logger.exception("Failed to create extracted image semantic task, image_id=%s", image_id)
+        logger.exception(
+            "Failed to create extracted image semantic task",
+            extra=build_log_extra(
+                "extracted_image.semantic_task_create.failed",
+                image_id=image_id,
+                request_id=request_id,
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="extracted image semantic task conflict",
         ) from exc
 
+    logger.info(
+        "Extracted image semantic task submitted",
+        extra=build_log_extra(
+            "extracted_image.semantic_task_create.succeeded",
+            image_id=image_id,
+            request_id=request_id,
+            task_id=str(submission.task.id),
+            reused=submission.reused,
+        ),
+    )
     return _to_task_read(submission.task, reused=submission.reused)
 
 
@@ -185,7 +188,6 @@ def get_extracted_image_semantic_result(
     image_id: int,
     session: Session = Depends(get_session),
 ) -> ExtractedImageSemanticImageResultRead:
-    """按图片查询最新一次语义识别任务状态。"""
     extracted_image = get_extracted_image_or_404(image_id, session)
     task = get_latest_extracted_image_semantic_task_for_image(session, extracted_image_id=extracted_image.id)
     if task is None:
@@ -203,7 +205,6 @@ def update_extracted_image(
     payload: ExtractedImageUpdate,
     session: Session = Depends(get_session),
 ) -> ExtractedImage:
-    """更新提取图片记录。"""
     extracted_image = get_extracted_image_or_404(image_id, session)
     update_data = payload.model_dump(exclude_unset=True)
     for field_name, value in update_data.items():
@@ -224,16 +225,13 @@ def update_extracted_image(
 
 @router.delete("/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_extracted_image(image_id: int, session: Session = Depends(get_session)) -> Response:
-    """删除提取图片记录。"""
     extracted_image = get_extracted_image_or_404(image_id, session)
     session.delete(extracted_image)
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-
 def _to_task_read(task: ExtractedImageSemanticTask, *, reused: bool = False) -> ExtractedImageSemanticTaskRead:
-    """将任务模型转换为 API 响应。"""
     return ExtractedImageSemanticTaskRead(
         id=task.id,
         image_id=task.extracted_image_id,
@@ -253,9 +251,7 @@ def _to_task_read(task: ExtractedImageSemanticTask, *, reused: bool = False) -> 
     )
 
 
-
 def _to_image_result_read(task: ExtractedImageSemanticTask) -> ExtractedImageSemanticImageResultRead:
-    """将任务模型转换为“按图片查询最新状态”的响应。"""
     return ExtractedImageSemanticImageResultRead(
         image_id=task.extracted_image_id,
         status=ExtractedImageSemanticResultStatus(task.status.value),

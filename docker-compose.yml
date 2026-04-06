@@ -12,11 +12,16 @@ services:
 
   api:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: softplan-api
     ports:
       - "8000:8000"
     environment:
+      APP_ENV: ${APP_ENV:-development}
+      APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
+      APP_LOG_FORMAT: ${APP_LOG_FORMAT:-auto}
+      APP_LOG_ACCESS_ENABLED: ${APP_LOG_ACCESS_ENABLED:-true}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-softplan}:${POSTGRES_PASSWORD:-softplan}@postgres:5432/${POSTGRES_DB:-softplan}
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
@@ -38,11 +43,16 @@ services:
 
   file-convert-service:
     build:
-      context: ./file-convert-service
+      context: .
+      dockerfile: file-convert-service/Dockerfile
     container_name: softplan-file-convert-service
     ports:
       - "8010:8000"
     environment:
+      APP_ENV: ${APP_ENV:-development}
+      APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
+      APP_LOG_FORMAT: ${APP_LOG_FORMAT:-auto}
+      APP_LOG_ACCESS_ENABLED: ${APP_LOG_ACCESS_ENABLED:-true}
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
@@ -59,11 +69,16 @@ services:
 
   llm-service:
     build:
-      context: ./llm-service
+      context: .
+      dockerfile: llm-service/Dockerfile
     container_name: softplan-llm-service
     ports:
       - "8020:8000"
     environment:
+      APP_ENV: ${APP_ENV:-development}
+      APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
+      APP_LOG_FORMAT: ${APP_LOG_FORMAT:-auto}
+      APP_LOG_ACCESS_ENABLED: ${APP_LOG_ACCESS_ENABLED:-true}
       LLM_API_BASE_URL: ${LLM_API_BASE_URL:-https://api.openai.com/v1}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-gpt-4o-mini}

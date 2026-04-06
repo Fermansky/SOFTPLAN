@@ -6,11 +6,14 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-COPY requirements.txt ./
+COPY file-convert-service/requirements.txt ./requirements.txt
+COPY pyproject.toml ./pyproject.toml
+COPY common ./common
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.txt
+    pip install -r requirements.txt && \
+    pip install .
 
-COPY app ./app
+COPY file-convert-service/app ./app
 
 EXPOSE 8000
 
