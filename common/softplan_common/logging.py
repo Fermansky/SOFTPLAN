@@ -1,4 +1,4 @@
-"""Shared logging infrastructure for Softplan Python services."""
+﻿"""Shared logging infrastructure for Softplan Python services."""
 
 from __future__ import annotations
 
@@ -288,3 +288,4 @@ __all__ = [
     "get_request_id",
     "install_request_id_middleware",
 ]
+

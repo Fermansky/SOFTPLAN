@@ -1,1 +1,2 @@
-"""Shared Python utilities for Softplan services."""
+﻿"""Shared Python utilities for Softplan services."""
+

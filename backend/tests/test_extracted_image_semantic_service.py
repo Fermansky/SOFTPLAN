@@ -1,4 +1,4 @@
-﻿import os
+import os
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
@@ -56,7 +56,7 @@ class _ClientStub:
     def __init__(
         self,
         *,
-        text: str = "\u56fe\u7247\u63cf\u8ff0",
+        text: str = "image description",
         model: str = "gpt-4o-mini",
         request_id: str | None = "req-1",
         error: str | None = None,
@@ -154,7 +154,7 @@ class ExtractedImageSemanticExecutionTests(TestCase):
     def test_execute_recognition_succeeds(self):
         extracted_image = self._build_extracted_image()
         storage = _StorageStub(payload=b"png-bytes")
-        client = _ClientStub(text="\u8fd9\u662f\u4e00\u5f20\u6d4b\u8bd5\u56fe\u7247", model="request-model", request_id="req-42")
+        client = _ClientStub(text="test image description", model="request-model", request_id="req-42")
 
         with patch(
             "backend.app.services.extracted_image_semantic_service.load_extracted_image_semantic_prompt",
@@ -169,12 +169,12 @@ class ExtractedImageSemanticExecutionTests(TestCase):
             )
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(result.description, "\u8fd9\u662f\u4e00\u5f20\u6d4b\u8bd5\u56fe\u7247")
+        self.assertEqual(result.description, "test image description")
         self.assertEqual(result.result_model, "request-model")
         self.assertIsNone(result.error_message)
         self.assertEqual(storage.calls, [{"storage_key": "images/hash-a.png", "bucket": "softplan"}])
         self.assertEqual(client.last_call["model"], "request-model")
-        self.assertEqual(client.last_call["prompt"], "\u8bf7\u57fa\u4e8e\u8fd9\u5f20\u56fe\u7247\u751f\u6210\u4e00\u6bb5\u4e2d\u6587\u8bed\u4e49\u63cf\u8ff0\u3002")
+        self.assertEqual(client.last_call["prompt"], "请基于这张图片生成一段中文语义描述。")
         self.assertEqual(client.last_call["system_prompt"], "system prompt")
         self.assertIsInstance(client.last_call["input_parts"][0], LlmTextInputPart)
         self.assertIsInstance(client.last_call["input_parts"][1], LlmImageUrlInputPart)
@@ -237,7 +237,12 @@ class ExtractedImageSemanticRouteTests(TestCase):
             height=200,
         )
 
-    def _build_task(self, *, status: ExtractedImageSemanticTaskStatus = ExtractedImageSemanticTaskStatus.pending) -> ExtractedImageSemanticTask:
+    def _build_task(
+        self,
+        *,
+        status: ExtractedImageSemanticTaskStatus = ExtractedImageSemanticTaskStatus.pending,
+        overwrite_existing_snapshot: bool = False,
+    ) -> ExtractedImageSemanticTask:
         return ExtractedImageSemanticTask(
             id=uuid4(),
             extracted_image_id=1,
@@ -245,18 +250,19 @@ class ExtractedImageSemanticRouteTests(TestCase):
             requested_model="request-model",
             target_model="request-model",
             target_model_key="request-model",
+            overwrite_existing_snapshot=overwrite_existing_snapshot,
             result_model="request-model" if status == ExtractedImageSemanticTaskStatus.succeeded else None,
             request_id="req-9",
             prompt_path="backend/app/prompts/extracted_image_semantic.txt",
             prompt_hash="abc123",
-            description="\u4e2d\u6587\u63cf\u8ff0" if status == ExtractedImageSemanticTaskStatus.succeeded else None,
+            description="中文描述" if status == ExtractedImageSemanticTaskStatus.succeeded else None,
             error_message="boom" if status == ExtractedImageSemanticTaskStatus.failed else None,
             attempt_count=1,
         )
 
-    def test_create_task_route_returns_task_payload(self):
+    def test_create_task_route_uses_default_overwrite_false(self):
         extracted_image = self._build_extracted_image()
-        task = self._build_task()
+        task = self._build_task(overwrite_existing_snapshot=False)
 
         with patch.object(extracted_images, "get_extracted_image_or_404", return_value=extracted_image), patch.object(
             extracted_images,
@@ -272,8 +278,32 @@ class ExtractedImageSemanticRouteTests(TestCase):
         self.assertEqual(response.image_id, 1)
         self.assertEqual(response.status, ExtractedImageSemanticTaskStatus.pending)
         self.assertTrue(response.reused)
+        self.assertFalse(response.overwrite_existing_snapshot)
         self.assertEqual(create_mock.call_args.kwargs["requested_model"], "request-model")
         self.assertEqual(create_mock.call_args.kwargs["request_id"], "req-9")
+        self.assertFalse(create_mock.call_args.kwargs["overwrite_existing_snapshot"])
+
+    def test_create_task_route_passes_overwrite_true(self):
+        extracted_image = self._build_extracted_image()
+        task = self._build_task(overwrite_existing_snapshot=True)
+
+        with patch.object(extracted_images, "get_extracted_image_or_404", return_value=extracted_image), patch.object(
+            extracted_images,
+            "create_or_reuse_extracted_image_semantic_task",
+            return_value=ExtractedImageSemanticTaskSubmissionResult(task=task, reused=False),
+        ) as create_mock:
+            response = extracted_images.create_extracted_image_semantic_task(
+                image_id=1,
+                payload=extracted_images.ExtractedImageSemanticTaskCreateRequest(
+                    request_id="req-10",
+                    model="request-model",
+                    overwrite_existing_snapshot=True,
+                ),
+                session=object(),
+            )
+
+        self.assertTrue(response.overwrite_existing_snapshot)
+        self.assertTrue(create_mock.call_args.kwargs["overwrite_existing_snapshot"])
 
     def test_get_task_route_returns_404_when_missing(self):
         with patch.object(extracted_images, "get_extracted_image_semantic_task_by_id", return_value=None):
@@ -308,7 +338,7 @@ class ExtractedImageSemanticRouteTests(TestCase):
             response = extracted_images.get_extracted_image_semantic_result(image_id=1, session=object())
 
         self.assertEqual(response.status, extracted_images.ExtractedImageSemanticResultStatus.succeeded)
-        self.assertEqual(response.description, "\u4e2d\u6587\u63cf\u8ff0")
+        self.assertEqual(response.description, "中文描述")
         self.assertEqual(response.result_model, "request-model")
 
     def test_route_returns_404_when_image_missing(self):

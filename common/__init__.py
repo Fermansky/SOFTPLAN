@@ -1,1 +1,2 @@
-"""Packaging namespace for shared Softplan Python modules."""
+﻿"""Packaging namespace for shared Softplan Python modules."""
+

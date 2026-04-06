@@ -1,4 +1,4 @@
-"""File convert service logging helpers backed by the shared package."""
+﻿"""File convert service logging helpers backed by the shared package."""
 
 from fastapi import FastAPI
 
@@ -32,3 +32,4 @@ __all__ = [
     "get_request_id",
     "install_request_id_middleware",
 ]
+

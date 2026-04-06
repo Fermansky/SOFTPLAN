@@ -17,6 +17,15 @@ class ExtractedImageBase(SQLModel):
     height: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
 
 
+class ExtractedImageSemanticSnapshot(SQLModel):
+    semantic_description: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    semantic_description_model: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    semantic_description_updated_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+
+
 class ExtractedImage(ExtractedImageBase, table=True):
     __tablename__ = "extracted_images"
 
@@ -27,6 +36,12 @@ class ExtractedImage(ExtractedImageBase, table=True):
     created_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+    semantic_description: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    semantic_description_model: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    semantic_description_updated_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
     )
 
 
@@ -45,6 +60,7 @@ class ExtractedImageUpdate(SQLModel):
     height: int | None = None
 
 
-class ExtractedImageRead(ExtractedImageBase):
+class ExtractedImageRead(ExtractedImageBase, ExtractedImageSemanticSnapshot):
     id: int
     created_at: datetime
+

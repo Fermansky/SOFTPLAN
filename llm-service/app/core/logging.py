@@ -1,4 +1,4 @@
-"""Backend logging helpers backed by the shared package."""
+﻿"""Backend logging helpers backed by the shared package."""
 
 from softplan_common.logging import (
     REQUEST_ID_HEADER,
@@ -21,3 +21,4 @@ __all__ = [
     "get_request_id",
     "install_request_id_middleware",
 ]
+

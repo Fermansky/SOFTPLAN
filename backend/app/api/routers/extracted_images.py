@@ -1,11 +1,3 @@
-﻿"""提取图片资源路由。
-
-职责：
-1. 提供 ExtractedImage 的基础 CRUD 接口。
-2. 暴露图片语义识别任务的提交、按任务查询、按图片查询最新结果接口。
-3. 负责把任务服务结果映射为稳定的 API 响应模型。
-"""
-
 import logging
 from datetime import datetime
 from enum import Enum
@@ -40,6 +32,7 @@ logger = logging.getLogger(__name__)
 class ExtractedImageSemanticTaskCreateRequest(BaseModel):
     request_id: str | None = None
     model: str | None = None
+    overwrite_existing_snapshot: bool = False
 
 
 class ExtractedImageSemanticTaskRead(BaseModel):
@@ -48,6 +41,7 @@ class ExtractedImageSemanticTaskRead(BaseModel):
     status: ExtractedImageSemanticTaskStatus
     requested_model: str | None = None
     target_model: str | None = None
+    overwrite_existing_snapshot: bool = False
     result_model: str | None = None
     request_id: str | None = None
     attempt_count: int
@@ -138,6 +132,7 @@ def create_extracted_image_semantic_task(
     extracted_image = get_extracted_image_or_404(image_id, session)
     request_id = (payload.request_id if payload is not None else None) or get_request_id()
     requested_model = payload.model if payload is not None else None
+    overwrite_existing_snapshot = payload.overwrite_existing_snapshot if payload is not None else False
 
     logger.info(
         "Received extracted image semantic task submission",
@@ -146,6 +141,7 @@ def create_extracted_image_semantic_task(
             image_id=image_id,
             request_id=request_id,
             requested_model=requested_model or "<default>",
+            overwrite_existing_snapshot=overwrite_existing_snapshot,
         ),
     )
     try:
@@ -154,6 +150,7 @@ def create_extracted_image_semantic_task(
             extracted_image=extracted_image,
             requested_model=requested_model,
             request_id=request_id,
+            overwrite_existing_snapshot=overwrite_existing_snapshot,
         )
     except IntegrityError as exc:
         session.rollback()
@@ -163,6 +160,7 @@ def create_extracted_image_semantic_task(
                 "extracted_image.semantic_task_create.failed",
                 image_id=image_id,
                 request_id=request_id,
+                overwrite_existing_snapshot=overwrite_existing_snapshot,
             ),
         )
         raise HTTPException(
@@ -178,6 +176,7 @@ def create_extracted_image_semantic_task(
             request_id=request_id,
             task_id=str(submission.task.id),
             reused=submission.reused,
+            overwrite_existing_snapshot=submission.task.overwrite_existing_snapshot,
         ),
     )
     return _to_task_read(submission.task, reused=submission.reused)
@@ -238,6 +237,7 @@ def _to_task_read(task: ExtractedImageSemanticTask, *, reused: bool = False) -> 
         status=task.status,
         requested_model=task.requested_model,
         target_model=task.target_model,
+        overwrite_existing_snapshot=task.overwrite_existing_snapshot,
         result_model=task.result_model,
         request_id=task.request_id,
         attempt_count=task.attempt_count,

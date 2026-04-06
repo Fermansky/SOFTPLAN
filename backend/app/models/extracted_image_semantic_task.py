@@ -1,9 +1,8 @@
-﻿from datetime import datetime
+from datetime import datetime
 from enum import Enum
 from uuid import UUID, uuid4
 
-from sqlalchemy import BIGINT, Column, DateTime, Enum as SAEnum, ForeignKey, Index, Integer, Text, text
-from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy import BIGINT, Boolean, Column, DateTime, Enum as SAEnum, ForeignKey, Index, Integer, Text, text
 from sqlmodel import Field, SQLModel
 
 from .common import utc_now
@@ -22,6 +21,7 @@ class ExtractedImageSemanticTaskBase(SQLModel):
     requested_model: str | None = None
     target_model: str | None = None
     target_model_key: str
+    overwrite_existing_snapshot: bool = False
     result_model: str | None = None
     request_id: str | None = None
     prompt_path: str
@@ -39,6 +39,7 @@ class ExtractedImageSemanticTask(ExtractedImageSemanticTaskBase, table=True):
             "ux_extracted_image_semantic_tasks_active",
             "extracted_image_id",
             "target_model_key",
+            "overwrite_existing_snapshot",
             unique=True,
             postgresql_where=text("status IN ('pending', 'running')"),
         ),
@@ -55,6 +56,10 @@ class ExtractedImageSemanticTask(ExtractedImageSemanticTaskBase, table=True):
     requested_model: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     target_model: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     target_model_key: str = Field(sa_column=Column(Text, nullable=False, index=True))
+    overwrite_existing_snapshot: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, default=False, server_default=text("false")),
+    )
     result_model: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     request_id: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     prompt_path: str = Field(sa_column=Column(Text, nullable=False))
