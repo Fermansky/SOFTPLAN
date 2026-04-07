@@ -22,10 +22,12 @@ from ...models import (
 )
 from ...services import FileConvertServiceClient
 from ...services.document_parsing_task_service import (
+    DocumentParsingImageSemanticResult,
     create_or_reuse_document_parsing_task,
     get_document_parsing_image_items,
+    get_document_parsing_image_semantic_result,
     get_document_parsing_task_by_id,
-    get_latest_document_parsing_task_for_document_file,
+    get_latest_succeeded_document_parsing_task_for_document_file,
     get_layout_task_for_document_parsing_task,
 )
 from ...services.layout_analysis_task_service import UnsupportedLayoutAnalysisModelError
@@ -60,6 +62,13 @@ class DocumentParsingTaskCreateRequest(BaseModel):
     force_layout_analysis: bool = False
 
 
+class DocumentParsingImageSemanticRead(BaseModel):
+    description: str
+    result_model: str | None = None
+    source_task_id: UUID | None = None
+    updated_at: datetime
+
+
 class DocumentParsingImageItemRead(BaseModel):
     id: int
     source_key: str
@@ -69,6 +78,7 @@ class DocumentParsingImageItemRead(BaseModel):
     status: DocumentParsingImageItemStatus
     result_source: DocumentParsingImageItemResultSource | None = None
     error_message: str | None = None
+    semantic: DocumentParsingImageSemanticRead | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -155,7 +165,24 @@ def _resolve_pdf_file_record(document_id: UUID, session: Session) -> tuple[UUID,
 
 
 
-def _to_image_item_read(item: DocumentParsingImageItem) -> DocumentParsingImageItemRead:
+def _to_image_semantic_read(
+    semantic: DocumentParsingImageSemanticResult | None,
+) -> DocumentParsingImageSemanticRead | None:
+    if semantic is None:
+        return None
+    return DocumentParsingImageSemanticRead(
+        description=semantic.description,
+        result_model=semantic.result_model,
+        source_task_id=semantic.source_task_id,
+        updated_at=semantic.updated_at,
+    )
+
+
+def _to_image_item_read(
+    item: DocumentParsingImageItem,
+    *,
+    semantic: DocumentParsingImageSemanticResult | None = None,
+) -> DocumentParsingImageItemRead:
     return DocumentParsingImageItemRead(
         id=item.id or 0,
         source_key=item.source_key,
@@ -165,6 +192,7 @@ def _to_image_item_read(item: DocumentParsingImageItem) -> DocumentParsingImageI
         status=item.status,
         result_source=item.result_source,
         error_message=item.error_message,
+        semantic=_to_image_semantic_read(semantic),
         created_at=item.created_at,
         updated_at=item.updated_at,
     )
@@ -200,6 +228,17 @@ def _to_document_parsing_task_read(
 ) -> DocumentParsingTaskRead:
     layout_task = get_layout_task_for_document_parsing_task(session, task=task)
     image_items = get_document_parsing_image_items(session, task_id=task.id)
+    image_item_reads = [
+        _to_image_item_read(
+            item,
+            semantic=get_document_parsing_image_semantic_result(
+                session,
+                item=item,
+                image_model_key=task.image_model_key,
+            ),
+        )
+        for item in image_items
+    ]
     layout_status = layout_task.status if layout_task is not None else LayoutAnalysisTaskStatus.failed
     layout_succeeded = layout_task is not None and layout_task.status == LayoutAnalysisTaskStatus.succeeded
     return DocumentParsingTaskRead(
@@ -225,7 +264,7 @@ def _to_document_parsing_task_read(
         reused=reused,
         markdown=task.markdown if layout_succeeded else None,
         image_hashes=task.image_hashes if layout_succeeded else {},
-        image_items=[_to_image_item_read(item) for item in image_items],
+        image_items=image_item_reads,
         error_message=task.error_message,
         created_at=task.created_at,
         started_at=task.started_at,
@@ -312,7 +351,7 @@ def get_document_parsing_document_result(
 ) -> DocumentParsingDocumentResultRead:
     resolved_document_id, file_record = _resolve_pdf_file_record(document_id, session)
 
-    task = get_latest_document_parsing_task_for_document_file(
+    task = get_latest_succeeded_document_parsing_task_for_document_file(
         session,
         document_id=resolved_document_id,
         file_id=file_record.id,

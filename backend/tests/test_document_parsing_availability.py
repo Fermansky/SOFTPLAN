@@ -1,4 +1,5 @@
-﻿from types import SimpleNamespace
+﻿from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 from uuid import uuid4
@@ -141,7 +142,16 @@ class RouterTests(TestCase):
             document_parsing,
             "get_layout_task_for_document_parsing_task",
             return_value=layout_task,
-        ), patch.object(document_parsing, "get_document_parsing_image_items", return_value=[image_item]):
+        ), patch.object(document_parsing, "get_document_parsing_image_items", return_value=[image_item]), patch.object(
+            document_parsing,
+            "get_document_parsing_image_semantic_result",
+            return_value=document_parsing.DocumentParsingImageSemanticResult(
+                description="semantic text",
+                result_model="vision-model",
+                source_task_id=uuid4(),
+                updated_at=datetime.now(timezone.utc),
+            ),
+        ):
             response = document_parsing.create_document_parsing_task(
                 payload=document_parsing.DocumentParsingTaskCreateRequest(
                     document_id=document.id,
@@ -157,8 +167,9 @@ class RouterTests(TestCase):
         self.assertEqual(response.image_analysis_status, document_parsing.DocumentParsingImageAnalysisStatus.running)
         self.assertEqual(response.markdown, "# parsed")
         self.assertEqual(len(response.image_items), 1)
+        self.assertEqual(response.image_items[0].semantic.description, "semantic text")
 
-    def test_get_document_parsing_document_result_exposes_layout_result_before_image_completion(self):
+    def test_get_document_parsing_document_result_returns_latest_succeeded_task_with_image_semantic(self):
         document, file_record = self._build_pdf_document_and_file()
         session = _SessionStub()
         layout_task = LayoutAnalysisTask(
@@ -187,11 +198,11 @@ class RouterTests(TestCase):
             target_image_model="vision-model",
             image_model_key="vision-model",
             layout_task_id=layout_task.id,
-            status=DocumentParsingTaskStatus.running,
+            status=DocumentParsingTaskStatus.succeeded,
             markdown="# parsed",
             image_hashes={"img-1": "a" * 64},
             image_total_count=1,
-            image_succeeded_count=0,
+            image_succeeded_count=1,
             image_failed_count=0,
         )
         image_item = DocumentParsingImageItem(
@@ -201,8 +212,8 @@ class RouterTests(TestCase):
             file_hash="a" * 64,
             extracted_image_id=1,
             semantic_task_id=uuid4(),
-            status=DocumentParsingImageItemStatus.running,
-            result_source=DocumentParsingImageItemResultSource.reused_semantic_task,
+            status=DocumentParsingImageItemStatus.succeeded,
+            result_source=DocumentParsingImageItemResultSource.semantic_snapshot,
         )
 
         with patch.object(document_parsing, "get_active_document_or_404", return_value=document), patch.object(
@@ -211,21 +222,49 @@ class RouterTests(TestCase):
             return_value=file_record,
         ), patch.object(
             document_parsing,
-            "get_latest_document_parsing_task_for_document_file",
+            "get_latest_succeeded_document_parsing_task_for_document_file",
             return_value=task,
         ), patch.object(
             document_parsing,
             "get_layout_task_for_document_parsing_task",
             return_value=layout_task,
-        ), patch.object(document_parsing, "get_document_parsing_image_items", return_value=[image_item]):
+        ), patch.object(document_parsing, "get_document_parsing_image_items", return_value=[image_item]), patch.object(
+            document_parsing,
+            "get_document_parsing_image_semantic_result",
+            return_value=document_parsing.DocumentParsingImageSemanticResult(
+                description="semantic text",
+                result_model="vision-model",
+                source_task_id=uuid4(),
+                updated_at=datetime.now(timezone.utc),
+            ),
+        ):
             response = document_parsing.get_document_parsing_document_result(document_id=document.id, session=session)
 
-        self.assertEqual(response.status, document_parsing.DocumentParsingDocumentResultStatus.running)
+        self.assertEqual(response.status, document_parsing.DocumentParsingDocumentResultStatus.succeeded)
         self.assertEqual(response.layout_status, LayoutAnalysisTaskStatus.succeeded)
-        self.assertEqual(response.image_analysis_status, document_parsing.DocumentParsingImageAnalysisStatus.running)
+        self.assertEqual(response.image_analysis_status, document_parsing.DocumentParsingImageAnalysisStatus.succeeded)
         self.assertEqual(response.markdown, "# parsed")
         self.assertEqual(response.image_hashes, {"img-1": "a" * 64})
         self.assertEqual(len(response.image_items), 1)
+        self.assertEqual(response.image_items[0].semantic.description, "semantic text")
+
+    def test_get_document_parsing_document_result_returns_no_task_without_succeeded_result(self):
+        document, file_record = self._build_pdf_document_and_file()
+
+        with patch.object(document_parsing, "get_active_document_or_404", return_value=document), patch.object(
+            document_parsing,
+            "get_file_or_404",
+            return_value=file_record,
+        ), patch.object(
+            document_parsing,
+            "get_latest_succeeded_document_parsing_task_for_document_file",
+            return_value=None,
+        ):
+            response = document_parsing.get_document_parsing_document_result(document_id=document.id, session=_SessionStub())
+
+        self.assertEqual(response.status, document_parsing.DocumentParsingDocumentResultStatus.no_task)
+        self.assertEqual(response.file_id, file_record.id)
+        self.assertIsNone(response.task_id)
 
     def test_create_layout_analysis_task_returns_layout_semantics(self):
         document, file_record = self._build_pdf_document_and_file()

@@ -1,6 +1,7 @@
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -49,6 +50,14 @@ class DocumentParsingModelSelection:
 class DocumentParsingImageRef:
     source_key: str
     file_hash: str
+
+
+@dataclass(frozen=True)
+class DocumentParsingImageSemanticResult:
+    description: str
+    result_model: str | None
+    source_task_id: UUID | None
+    updated_at: datetime
 
 
 
@@ -234,6 +243,25 @@ def get_latest_document_parsing_task_for_document_file(
 
 
 
+def get_latest_succeeded_document_parsing_task_for_document_file(
+    session: Session,
+    *,
+    document_id: UUID,
+    file_id: UUID,
+) -> DocumentParsingTask | None:
+    statement = (
+        select(DocumentParsingTask)
+        .where(
+            DocumentParsingTask.document_id == document_id,
+            DocumentParsingTask.file_id == file_id,
+            DocumentParsingTask.status == DocumentParsingTaskStatus.succeeded,
+        )
+        .order_by(DocumentParsingTask.created_at.desc())
+    )
+    return session.exec(statement).first()
+
+
+
 def get_document_parsing_image_items(session: Session, *, task_id: UUID) -> list[DocumentParsingImageItem]:
     statement = (
         select(DocumentParsingImageItem)
@@ -246,6 +274,43 @@ def get_document_parsing_image_items(session: Session, *, task_id: UUID) -> list
 
 def get_layout_task_for_document_parsing_task(session: Session, *, task: DocumentParsingTask) -> LayoutAnalysisTask | None:
     return session.get(LayoutAnalysisTask, task.layout_task_id)
+
+
+
+def get_document_parsing_image_semantic_result(
+    session: Session,
+    *,
+    item: DocumentParsingImageItem,
+    image_model_key: str,
+) -> DocumentParsingImageSemanticResult | None:
+    snapshot = _get_semantic_snapshot(
+        session,
+        extracted_image_id=item.extracted_image_id,
+        target_model_key=image_model_key,
+    )
+    if snapshot is not None:
+        return DocumentParsingImageSemanticResult(
+            description=snapshot.description,
+            result_model=snapshot.result_model,
+            source_task_id=snapshot.source_task_id,
+            updated_at=snapshot.updated_at,
+        )
+
+    if item.semantic_task_id is None:
+        return None
+
+    semantic_task = session.get(ExtractedImageSemanticTask, item.semantic_task_id)
+    if semantic_task is None or semantic_task.status != ExtractedImageSemanticTaskStatus.succeeded:
+        return None
+    if semantic_task.description is None:
+        return None
+
+    return DocumentParsingImageSemanticResult(
+        description=semantic_task.description,
+        result_model=semantic_task.result_model,
+        source_task_id=semantic_task.id,
+        updated_at=semantic_task.updated_at,
+    )
 
 
 

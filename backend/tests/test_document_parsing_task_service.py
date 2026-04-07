@@ -12,6 +12,8 @@ from backend.app.models import (
     DocumentParsingTaskStatus,
     ExtractedImage,
     ExtractedImageSemanticSnapshot,
+    ExtractedImageSemanticTask,
+    ExtractedImageSemanticTaskStatus,
     LayoutAnalysisTask,
     LayoutAnalysisTaskStatus,
 )
@@ -24,6 +26,7 @@ class _SessionStub:
         self.committed = False
         self.refreshed = []
         self.rolled_back = False
+        self.get_results = {}
 
     def add(self, item):
         self.added.append(item)
@@ -36,6 +39,9 @@ class _SessionStub:
 
     def rollback(self):
         self.rolled_back = True
+
+    def get(self, model, item_id):
+        return self.get_results.get((model, item_id))
 
 
 class _ExecResult:
@@ -326,3 +332,105 @@ class DocumentParsingTaskServiceTests(TestCase):
             service.process_document_parsing_tasks_for_layout_task(uuid4())
 
         self.assertEqual(sync_mock.call_count, 2)
+    def test_get_document_parsing_image_semantic_result_prefers_snapshot(self):
+        semantic_task_id = uuid4()
+        item = DocumentParsingImageItem(
+            document_parsing_task_id=uuid4(),
+            source_key="img-1",
+            file_hash="a" * 64,
+            extracted_image_id=1,
+            semantic_task_id=semantic_task_id,
+            status=DocumentParsingImageItemStatus.succeeded,
+        )
+        snapshot = ExtractedImageSemanticSnapshot(
+            extracted_image_id=1,
+            target_model_key="vision-model",
+            result_model="snapshot-model",
+            description="snapshot description",
+            source_task_id=uuid4(),
+        )
+        session = _SessionStub()
+        session.get_results[(ExtractedImageSemanticTask, semantic_task_id)] = ExtractedImageSemanticTask(
+            id=semantic_task_id,
+            extracted_image_id=1,
+            status=ExtractedImageSemanticTaskStatus.succeeded,
+            target_model_key="vision-model",
+            prompt_path="prompt.txt",
+            description="task description",
+            result_model="task-model",
+        )
+
+        with patch.object(service, "_get_semantic_snapshot", return_value=snapshot):
+            result = service.get_document_parsing_image_semantic_result(
+                session,
+                item=item,
+                image_model_key="vision-model",
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.description, "snapshot description")
+        self.assertEqual(result.result_model, "snapshot-model")
+        self.assertEqual(result.source_task_id, snapshot.source_task_id)
+
+    def test_get_document_parsing_image_semantic_result_falls_back_to_succeeded_task(self):
+        semantic_task_id = uuid4()
+        item = DocumentParsingImageItem(
+            document_parsing_task_id=uuid4(),
+            source_key="img-1",
+            file_hash="a" * 64,
+            extracted_image_id=1,
+            semantic_task_id=semantic_task_id,
+            status=DocumentParsingImageItemStatus.succeeded,
+        )
+        semantic_task = ExtractedImageSemanticTask(
+            id=semantic_task_id,
+            extracted_image_id=1,
+            status=ExtractedImageSemanticTaskStatus.succeeded,
+            target_model_key="vision-model",
+            prompt_path="prompt.txt",
+            description="task description",
+            result_model="task-model",
+        )
+        session = _SessionStub()
+        session.get_results[(ExtractedImageSemanticTask, semantic_task_id)] = semantic_task
+
+        with patch.object(service, "_get_semantic_snapshot", return_value=None):
+            result = service.get_document_parsing_image_semantic_result(
+                session,
+                item=item,
+                image_model_key="vision-model",
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.description, "task description")
+        self.assertEqual(result.result_model, "task-model")
+        self.assertEqual(result.source_task_id, semantic_task_id)
+
+    def test_get_document_parsing_image_semantic_result_returns_none_for_non_succeeded_task(self):
+        semantic_task_id = uuid4()
+        item = DocumentParsingImageItem(
+            document_parsing_task_id=uuid4(),
+            source_key="img-1",
+            file_hash="a" * 64,
+            extracted_image_id=1,
+            semantic_task_id=semantic_task_id,
+            status=DocumentParsingImageItemStatus.running,
+        )
+        session = _SessionStub()
+        session.get_results[(ExtractedImageSemanticTask, semantic_task_id)] = ExtractedImageSemanticTask(
+            id=semantic_task_id,
+            extracted_image_id=1,
+            status=ExtractedImageSemanticTaskStatus.running,
+            target_model_key="vision-model",
+            prompt_path="prompt.txt",
+        )
+
+        with patch.object(service, "_get_semantic_snapshot", return_value=None):
+            result = service.get_document_parsing_image_semantic_result(
+                session,
+                item=item,
+                image_model_key="vision-model",
+            )
+
+        self.assertIsNone(result)
+

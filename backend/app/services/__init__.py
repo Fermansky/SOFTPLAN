@@ -1,9 +1,12 @@
 ﻿from .document_parsing_task_service import (
+    DocumentParsingImageSemanticResult,
     DocumentParsingTaskSubmissionResult,
     create_or_reuse_document_parsing_task,
     get_document_parsing_image_items,
+    get_document_parsing_image_semantic_result,
     get_document_parsing_task_by_id,
     get_latest_document_parsing_task_for_document_file,
+    get_latest_succeeded_document_parsing_task_for_document_file,
     get_layout_task_for_document_parsing_task,
     process_document_parsing_tasks_for_layout_task,
     process_document_parsing_tasks_for_semantic_task,
@@ -67,6 +70,7 @@ from .llm_service import (
 from .minio_storage import MinioStorage, StoredObjectRef, get_minio_storage
 
 __all__ = [
+    "DocumentParsingImageSemanticResult",
     "DocumentParsingTaskSubmissionResult",
     "ExtractedImageSemanticExecutionResult",
     "ExtractedImageSemanticPromptError",
@@ -93,6 +97,7 @@ __all__ = [
     "get_active_extracted_image_semantic_task",
     "get_active_layout_analysis_task_for_document",
     "get_document_parsing_image_items",
+    "get_document_parsing_image_semantic_result",
     "get_document_parsing_task_by_id",
     "get_extracted_image_semantic_model",
     "get_extracted_image_semantic_prompt_snapshot",
@@ -102,6 +107,7 @@ __all__ = [
     "get_extracted_image_semantic_task_worker",
     "get_file_convert_service_client",
     "get_latest_document_parsing_task_for_document_file",
+    "get_latest_succeeded_document_parsing_task_for_document_file",
     "get_latest_extracted_image_semantic_task_for_image",
     "get_latest_layout_analysis_task_for_document_file",
     "get_latest_succeeded_layout_analysis_task_for_file",
