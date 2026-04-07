@@ -1,15 +1,4 @@
-﻿"""抽取图片语义任务服务。
-
-职责：
-1. 创建、复用、领取与执行抽取图片语义任务。
-2. 维护任务状态流转与图片语义快照更新规则。
-3. 在 worker 重启后恢复孤儿任务，保证状态最终可解释。
-
-说明：
-- 本模块负责任务层状态机，不负责单次 LLM 识别细节；识别执行由 `extracted_image_semantic_service` 提供。
-- 活动任务的 Dedup Reuse 由 `extracted_image_id + target_model_key + overwrite_existing_snapshot` 决定。
-- 图片级语义快照默认只写一次，除非显式要求覆盖。
-"""
+﻿"""抽取图片语义任务服务。"""
 
 import asyncio
 import logging
@@ -22,7 +11,12 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlmodel import Session, select
 
 from ..database import engine
-from ..models import ExtractedImage, ExtractedImageSemanticTask, ExtractedImageSemanticTaskStatus
+from ..models import (
+    ExtractedImage,
+    ExtractedImageSemanticSnapshot,
+    ExtractedImageSemanticTask,
+    ExtractedImageSemanticTaskStatus,
+)
 from ..models.common import utc_now
 from .extracted_image_semantic_service import (
     execute_extracted_image_semantic_recognition,
@@ -38,15 +32,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ExtractedImageSemanticTaskSubmissionResult:
-    """抽取图片语义任务提交结果。"""
-
     task: ExtractedImageSemanticTask
     reused: bool
 
 
 
 def _to_bool(value: str | None, *, default: bool = False) -> bool:
-    """将环境变量字符串解析为布尔值。"""
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
@@ -54,7 +45,6 @@ def _to_bool(value: str | None, *, default: bool = False) -> bool:
 
 
 def _normalize_requested_model(requested_model: str | None) -> str | None:
-    """规范化调用方传入的模型名。"""
     if requested_model is None:
         return None
     stripped = requested_model.strip()
@@ -62,8 +52,7 @@ def _normalize_requested_model(requested_model: str | None) -> str | None:
 
 
 
-def _has_semantic_snapshot(extracted_image: ExtractedImage) -> bool:
-    """判断图片是否已有可复用的语义快照。"""
+def _has_legacy_semantic_snapshot(extracted_image: ExtractedImage) -> bool:
     description = extracted_image.semantic_description
     if description is None:
         return False
@@ -71,13 +60,12 @@ def _has_semantic_snapshot(extracted_image: ExtractedImage) -> bool:
 
 
 
-def _should_update_extracted_image_semantic_snapshot(
+def _should_update_legacy_extracted_image_semantic_snapshot(
     extracted_image: ExtractedImage,
     *,
     overwrite_existing_snapshot: bool,
 ) -> bool:
-    """判断本次成功执行后是否应该刷新图片级语义快照。"""
-    return overwrite_existing_snapshot or not _has_semantic_snapshot(extracted_image)
+    return overwrite_existing_snapshot or not _has_legacy_semantic_snapshot(extracted_image)
 
 
 
@@ -88,7 +76,6 @@ def get_active_extracted_image_semantic_task(
     target_model_key: str,
     overwrite_existing_snapshot: bool,
 ) -> ExtractedImageSemanticTask | None:
-    """查询与当前语义完全等价的活动任务。"""
     statement = (
         select(ExtractedImageSemanticTask)
         .where(
@@ -100,6 +87,24 @@ def get_active_extracted_image_semantic_task(
             ),
         )
         .order_by(ExtractedImageSemanticTask.created_at.desc())
+    )
+    return session.exec(statement).first()
+
+
+
+def get_extracted_image_semantic_snapshot(
+    session: Session,
+    *,
+    extracted_image_id: int,
+    target_model_key: str,
+) -> ExtractedImageSemanticSnapshot | None:
+    statement = (
+        select(ExtractedImageSemanticSnapshot)
+        .where(
+            ExtractedImageSemanticSnapshot.extracted_image_id == extracted_image_id,
+            ExtractedImageSemanticSnapshot.target_model_key == target_model_key,
+        )
+        .order_by(ExtractedImageSemanticSnapshot.updated_at.desc())
     )
     return session.exec(statement).first()
 
@@ -116,27 +121,13 @@ def create_or_reuse_extracted_image_semantic_task(
     request_id: str | None = None,
     overwrite_existing_snapshot: bool = False,
 ) -> ExtractedImageSemanticTaskSubmissionResult:
-    """创建或复用抽取图片语义任务。
-
-    约束：
-    - 任务复用只发生在活动态任务之间。
-    - 去重语义取决于图片、目标模型语义与是否覆盖已有快照。
-
-    副作用：
-    - 会提交当前数据库事务。
-
-    失败语义：
-    - 并发冲突时优先回滚并复用获胜任务；若未查回获胜记录，则继续抛出原始异常。
-    """
     normalized_requested_model = _normalize_requested_model(requested_model)
     normalized_target_model = _normalize_requested_model(target_model) if use_target_model else None
     if not use_target_model:
-        # 常规路由入口在这里解析真正的执行模型。
         normalized_target_model = resolve_extracted_image_semantic_model(normalized_requested_model)
     target_model_key = get_extracted_image_semantic_target_model_key(normalized_target_model)
     prompt_path, prompt_hash = get_extracted_image_semantic_prompt_snapshot()
 
-    # Reuse 维度明确后，重复提交相同语义任务不会创建多个活动 worker。
     existing = get_active_extracted_image_semantic_task(
         session,
         extracted_image_id=extracted_image.id or 0,
@@ -163,7 +154,6 @@ def create_or_reuse_extracted_image_semantic_task(
     )
     session.add(task)
     try:
-        # 让数据库唯一索引仲裁并发提交，失败后再尝试复用获胜记录。
         session.commit()
     except IntegrityError:
         session.rollback()
@@ -187,7 +177,6 @@ def get_extracted_image_semantic_task_by_id(
     *,
     task_id: UUID,
 ) -> ExtractedImageSemanticTask | None:
-    """按任务 id 查询抽取图片语义任务。"""
     statement = select(ExtractedImageSemanticTask).where(ExtractedImageSemanticTask.id == task_id)
     return session.exec(statement).first()
 
@@ -198,7 +187,6 @@ def get_latest_extracted_image_semantic_task_for_image(
     *,
     extracted_image_id: int,
 ) -> ExtractedImageSemanticTask | None:
-    """查询图片最近一次语义任务记录。"""
     statement = (
         select(ExtractedImageSemanticTask)
         .where(ExtractedImageSemanticTask.extracted_image_id == extracted_image_id)
@@ -209,7 +197,6 @@ def get_latest_extracted_image_semantic_task_for_image(
 
 
 def _mark_task_failed(session: Session, *, task: ExtractedImageSemanticTask, error_message: str) -> None:
-    """将任务标记为失败并提交。"""
     now = utc_now()
     task.status = ExtractedImageSemanticTaskStatus.failed
     task.error_message = error_message
@@ -227,19 +214,45 @@ def _update_extracted_image_semantic_snapshot(
     result_model: str | None,
     updated_at,
 ) -> None:
-    """把任务执行结果写回图片级语义快照。"""
     extracted_image.semantic_description = description
     extracted_image.semantic_description_model = result_model
     extracted_image.semantic_description_updated_at = updated_at
 
 
 
-def recover_orphaned_extracted_image_semantic_tasks() -> int:
-    """恢复进程重启后遗留在 running 状态的孤儿任务。
+def _upsert_model_scoped_semantic_snapshot(
+    session: Session,
+    *,
+    extracted_image_id: int,
+    target_model_key: str,
+    description: str,
+    result_model: str | None,
+    source_task_id: UUID,
+    updated_at,
+) -> None:
+    snapshot = get_extracted_image_semantic_snapshot(
+        session,
+        extracted_image_id=extracted_image_id,
+        target_model_key=target_model_key,
+    )
+    if snapshot is None:
+        snapshot = ExtractedImageSemanticSnapshot(
+            extracted_image_id=extracted_image_id,
+            target_model_key=target_model_key,
+            description=description,
+            result_model=result_model,
+            source_task_id=source_task_id,
+        )
+    else:
+        snapshot.description = description
+        snapshot.result_model = result_model
+        snapshot.source_task_id = source_task_id
+        snapshot.updated_at = updated_at
+    session.add(snapshot)
 
-    说明：
-    - 旧 worker 已消失，继续保留 running 只会让任务长期不可解释，因此统一置为 failed。
-    """
+
+
+def recover_orphaned_extracted_image_semantic_tasks() -> int:
     with Session(engine) as session:
         statement = select(ExtractedImageSemanticTask).where(
             ExtractedImageSemanticTask.status == ExtractedImageSemanticTaskStatus.running
@@ -262,11 +275,6 @@ def recover_orphaned_extracted_image_semantic_tasks() -> int:
 
 
 def claim_next_pending_extracted_image_semantic_task_id() -> UUID | None:
-    """领取一条待执行任务并切换到 running。
-
-    说明：
-    - 使用 `FOR UPDATE SKIP LOCKED`，避免多个 worker 抢到同一条任务。
-    """
     with Session(engine) as session:
         statement = (
             select(ExtractedImageSemanticTask)
@@ -292,25 +300,22 @@ def claim_next_pending_extracted_image_semantic_task_id() -> UUID | None:
 
 
 
+def _synchronize_document_parsing_tasks(task_id: UUID) -> None:
+    try:
+        from .document_parsing_task_service import process_document_parsing_tasks_for_semantic_task
+
+        process_document_parsing_tasks_for_semantic_task(task_id)
+    except Exception:
+        logger.exception("Failed to synchronize document parsing tasks after semantic task completion, task_id=%s", task_id)
+
+
+
 def execute_extracted_image_semantic_task(
     task_id: UUID,
     *,
     client: LlmServiceClient | None = None,
     storage: MinioStorage | None = None,
 ) -> None:
-    """执行单条抽取图片语义任务。
-
-    流程：
-    1. 校验任务与图片状态。
-    2. 调用单次语义识别服务。
-    3. 按覆盖策略更新任务结果与图片级语义快照。
-
-    副作用：
-    - 会访问 MinIO、调用 llm-service、提交数据库事务。
-
-    失败语义：
-    - 任一步骤失败都会把任务标记为 failed。
-    """
     llm_client = client or get_llm_service_client()
     minio_storage = storage or get_minio_storage()
 
@@ -330,6 +335,7 @@ def execute_extracted_image_semantic_task(
         extracted_image = session.get(ExtractedImage, task.extracted_image_id)
         if extracted_image is None:
             _mark_task_failed(session, task=task, error_message="Extracted image not found")
+            _synchronize_document_parsing_tasks(task.id)
             return
 
         execution_result = execute_extracted_image_semantic_recognition(
@@ -345,6 +351,7 @@ def execute_extracted_image_semantic_task(
                 task=task,
                 error_message=execution_result.error_message or "Extracted image semantic recognition failed",
             )
+            _synchronize_document_parsing_tasks(task.id)
             return
 
         now = utc_now()
@@ -356,8 +363,17 @@ def execute_extracted_image_semantic_task(
         task.updated_at = now
         session.add(task)
 
-        # 任务历史总是保留，但图片级快照默认只在首次成功或显式覆盖时刷新。
-        if _should_update_extracted_image_semantic_snapshot(
+        _upsert_model_scoped_semantic_snapshot(
+            session,
+            extracted_image_id=extracted_image.id or 0,
+            target_model_key=task.target_model_key,
+            description=execution_result.description or "",
+            result_model=execution_result.result_model,
+            source_task_id=task.id,
+            updated_at=now,
+        )
+
+        if _should_update_legacy_extracted_image_semantic_snapshot(
             extracted_image,
             overwrite_existing_snapshot=task.overwrite_existing_snapshot,
         ):
@@ -386,6 +402,9 @@ def execute_extracted_image_semantic_task(
                     "Failed to mark extracted image semantic task failed after success commit error, task_id=%s",
                     task_id,
                 )
+                return
+
+    _synchronize_document_parsing_tasks(task_id)
 
 
 
@@ -394,7 +413,6 @@ def process_one_pending_extracted_image_semantic_task(
     client: LlmServiceClient | None = None,
     storage: MinioStorage | None = None,
 ) -> bool:
-    """处理一条待执行抽取图片语义任务。"""
     task_id = claim_next_pending_extracted_image_semantic_task_id()
     if task_id is None:
         return False
@@ -404,15 +422,12 @@ def process_one_pending_extracted_image_semantic_task(
 
 
 class ExtractedImageSemanticTaskWorker:
-    """抽取图片语义任务轮询 worker。"""
-
     def __init__(self, *, poll_interval_seconds: float = 1.0) -> None:
         self.poll_interval_seconds = poll_interval_seconds
         self._stop_event = asyncio.Event()
         self._runner_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
-        """启动 worker，并在正式轮询前恢复孤儿任务。"""
         if self._runner_task is not None and not self._runner_task.done():
             return
 
@@ -425,7 +440,6 @@ class ExtractedImageSemanticTaskWorker:
         logger.info("extracted image semantic task worker started")
 
     async def stop(self) -> None:
-        """停止 worker，并等待当前轮询循环退出。"""
         runner_task = self._runner_task
         if runner_task is None:
             return
@@ -436,7 +450,6 @@ class ExtractedImageSemanticTaskWorker:
         logger.info("extracted image semantic task worker stopped")
 
     async def _run_loop(self) -> None:
-        """持续轮询待执行任务，直到收到停止信号。"""
         while not self._stop_event.is_set():
             try:
                 processed = await asyncio.to_thread(process_one_pending_extracted_image_semantic_task)
@@ -455,13 +468,11 @@ class ExtractedImageSemanticTaskWorker:
 
 @lru_cache(maxsize=1)
 def get_extracted_image_semantic_task_worker() -> ExtractedImageSemanticTaskWorker:
-    """按环境变量构造抽取图片语义任务 worker 单例。"""
     poll_interval_seconds = float(os.getenv("EXTRACTED_IMAGE_SEMANTIC_TASK_WORKER_POLL_INTERVAL_SECONDS", "1.0"))
     return ExtractedImageSemanticTaskWorker(poll_interval_seconds=poll_interval_seconds)
 
 
 
 def is_extracted_image_semantic_task_worker_enabled() -> bool:
-    """读取抽取图片语义任务 worker 开关。"""
     value = os.getenv("EXTRACTED_IMAGE_SEMANTIC_TASK_WORKER_ENABLED")
     return _to_bool(value, default=True)

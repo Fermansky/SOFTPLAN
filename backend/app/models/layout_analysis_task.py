@@ -7,20 +7,20 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlmodel import Field, SQLModel
 
 from .common import utc_now
-from .layout_analysis_task import DEFAULT_LAYOUT_ANALYSIS_MODEL
 
 
-DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY = "__LLM_SERVICE_DEFAULT__"
+DEFAULT_LAYOUT_ANALYSIS_MODEL = "marker"
+DEFAULT_DOCUMENT_PARSING_PDF_MODEL = DEFAULT_LAYOUT_ANALYSIS_MODEL
 
 
-class DocumentParsingTaskStatus(str, Enum):
+class LayoutAnalysisTaskStatus(str, Enum):
     pending = "pending"
     running = "running"
     succeeded = "succeeded"
     failed = "failed"
 
 
-class DocumentParsingTaskBase(SQLModel):
+class LayoutAnalysisTaskBase(SQLModel):
     document_id: UUID
     file_id: UUID
     storage_bucket: str
@@ -28,30 +28,23 @@ class DocumentParsingTaskBase(SQLModel):
     requested_layout_model: str | None = None
     target_layout_model: str = DEFAULT_LAYOUT_ANALYSIS_MODEL
     layout_model_key: str = DEFAULT_LAYOUT_ANALYSIS_MODEL
-    requested_image_model: str | None = None
-    target_image_model: str | None = None
-    image_model_key: str = DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY
     force_layout_analysis: bool = False
-    layout_task_id: UUID
-    status: DocumentParsingTaskStatus = DocumentParsingTaskStatus.pending
+    layout_result_source_task_id: UUID | None = None
+    status: LayoutAnalysisTaskStatus = LayoutAnalysisTaskStatus.pending
     markdown: str | None = None
     image_hashes: dict[str, str] = Field(default_factory=dict)
-    image_total_count: int = 0
-    image_succeeded_count: int = 0
-    image_failed_count: int = 0
     error_message: str | None = None
     attempt_count: int = 0
 
 
-class DocumentParsingTask(DocumentParsingTaskBase, table=True):
-    __tablename__ = "document_parsing_tasks"
+class LayoutAnalysisTask(LayoutAnalysisTaskBase, table=True):
+    __tablename__ = "layout_analysis_tasks"
 
     __table_args__ = (
         Index(
-            "ux_document_parsing_tasks_document_active",
+            "ux_layout_analysis_tasks_document_active",
             "document_id",
             "layout_model_key",
-            "image_model_key",
             unique=True,
             postgresql_where=text("status IN ('pending', 'running')"),
         ),
@@ -73,28 +66,20 @@ class DocumentParsingTask(DocumentParsingTaskBase, table=True):
         default=DEFAULT_LAYOUT_ANALYSIS_MODEL,
         sa_column=Column(Text, nullable=False, server_default=DEFAULT_LAYOUT_ANALYSIS_MODEL),
     )
-    requested_image_model: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
-    target_image_model: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
-    image_model_key: str = Field(
-        default=DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY,
-        sa_column=Column(Text, nullable=False, server_default=DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY),
-    )
     force_layout_analysis: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("FALSE")),
     )
-    layout_task_id: UUID = Field(
-        sa_column=Column(PGUUID(as_uuid=True), ForeignKey("layout_analysis_tasks.id"), nullable=False, index=True)
+    layout_result_source_task_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(PGUUID(as_uuid=True), ForeignKey("layout_analysis_tasks.id"), nullable=True, index=True),
     )
-    status: DocumentParsingTaskStatus = Field(
-        default=DocumentParsingTaskStatus.pending,
-        sa_column=Column(SAEnum(DocumentParsingTaskStatus, native_enum=False), nullable=False, index=True),
+    status: LayoutAnalysisTaskStatus = Field(
+        default=LayoutAnalysisTaskStatus.pending,
+        sa_column=Column(SAEnum(LayoutAnalysisTaskStatus, native_enum=False), nullable=False, index=True),
     )
     markdown: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     image_hashes: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSONB, nullable=False))
-    image_total_count: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default=text("0")))
-    image_succeeded_count: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default=text("0")))
-    image_failed_count: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default=text("0")))
     error_message: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     attempt_count: int = Field(default=0, sa_column=Column(Integer, nullable=False, default=0))
     created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False))
@@ -103,7 +88,7 @@ class DocumentParsingTask(DocumentParsingTaskBase, table=True):
     updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
-class DocumentParsingTaskCreate(SQLModel):
+class LayoutAnalysisTaskCreate(SQLModel):
     document_id: UUID
     file_id: UUID
     storage_bucket: str
@@ -111,14 +96,11 @@ class DocumentParsingTaskCreate(SQLModel):
     requested_layout_model: str | None = None
     target_layout_model: str = DEFAULT_LAYOUT_ANALYSIS_MODEL
     layout_model_key: str = DEFAULT_LAYOUT_ANALYSIS_MODEL
-    requested_image_model: str | None = None
-    target_image_model: str | None = None
-    image_model_key: str = DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY
     force_layout_analysis: bool = False
-    layout_task_id: UUID
+    layout_result_source_task_id: UUID | None = None
 
 
-class DocumentParsingTaskRead(DocumentParsingTaskBase):
+class LayoutAnalysisTaskRead(LayoutAnalysisTaskBase):
     id: UUID
     created_at: datetime
     started_at: datetime | None = None

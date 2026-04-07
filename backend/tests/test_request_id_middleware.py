@@ -10,7 +10,7 @@ class BackendRequestIdMiddlewareTests(TestCase):
     def test_backend_health_reuses_request_id_header(self):
         with patch.object(backend_main, "create_db_and_tables", lambda: None):
             with patch.object(backend_main, "_log_extracted_image_semantic_prompt_status", lambda: None):
-                with patch.object(backend_main, "is_document_parsing_task_worker_enabled", return_value=False):
+                with patch.object(backend_main, "is_layout_analysis_task_worker_enabled", return_value=False):
                     with patch.object(backend_main, "is_extracted_image_semantic_task_worker_enabled", return_value=False):
                         with TestClient(backend_main.create_app()) as client:
                             response = client.get("/health", headers={"X-Request-ID": "req-backend-1"})
@@ -21,7 +21,7 @@ class BackendRequestIdMiddlewareTests(TestCase):
     def test_backend_health_generates_request_id_header(self):
         with patch.object(backend_main, "create_db_and_tables", lambda: None):
             with patch.object(backend_main, "_log_extracted_image_semantic_prompt_status", lambda: None):
-                with patch.object(backend_main, "is_document_parsing_task_worker_enabled", return_value=False):
+                with patch.object(backend_main, "is_layout_analysis_task_worker_enabled", return_value=False):
                     with patch.object(backend_main, "is_extracted_image_semantic_task_worker_enabled", return_value=False):
                         with TestClient(backend_main.create_app()) as client:
                             response = client.get("/health")

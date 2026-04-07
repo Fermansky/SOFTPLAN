@@ -17,7 +17,7 @@ class ExtractedImageBase(SQLModel):
     height: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
 
 
-class ExtractedImageSemanticSnapshot(SQLModel):
+class ExtractedImageLegacySemanticSnapshot(SQLModel):
     semantic_description: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     semantic_description_model: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     semantic_description_updated_at: datetime | None = Field(
@@ -60,7 +60,8 @@ class ExtractedImageUpdate(SQLModel):
     height: int | None = None
 
 
-class ExtractedImageRead(ExtractedImageBase, ExtractedImageSemanticSnapshot):
+class ExtractedImageRead(ExtractedImageBase, ExtractedImageLegacySemanticSnapshot):
     id: int
     created_at: datetime
+
 

@@ -9,12 +9,13 @@ from .core.logging import build_log_extra, configure_logging, install_request_id
 from .database import create_db_and_tables
 from .services import (
     ExtractedImageSemanticPromptError,
-    get_document_parsing_task_worker,
     get_extracted_image_semantic_task_worker,
-    is_document_parsing_task_worker_enabled,
+    get_layout_analysis_task_worker,
     is_extracted_image_semantic_task_worker_enabled,
+    is_layout_analysis_task_worker_enabled,
     load_extracted_image_semantic_prompt,
 )
+
 
 
 def _log_extracted_image_semantic_prompt_status() -> None:
@@ -26,6 +27,7 @@ def _log_extracted_image_semantic_prompt_status() -> None:
             "Extracted image semantic prompt is unavailable",
             extra=build_log_extra("extracted_image_semantic.prompt.unavailable", error=str(exc)),
         )
+
 
 
 def create_app() -> FastAPI:
@@ -45,17 +47,17 @@ def create_app() -> FastAPI:
     app.add_event_handler("startup", create_db_and_tables)
     app.add_event_handler("startup", _log_extracted_image_semantic_prompt_status)
 
-    if is_document_parsing_task_worker_enabled():
-        document_parsing_worker = get_document_parsing_task_worker()
+    if is_layout_analysis_task_worker_enabled():
+        layout_analysis_worker = get_layout_analysis_task_worker()
 
-        async def _start_document_parsing_task_worker() -> None:
-            await document_parsing_worker.start()
+        async def _start_layout_analysis_task_worker() -> None:
+            await layout_analysis_worker.start()
 
-        async def _stop_document_parsing_task_worker() -> None:
-            await document_parsing_worker.stop()
+        async def _stop_layout_analysis_task_worker() -> None:
+            await layout_analysis_worker.stop()
 
-        app.add_event_handler("startup", _start_document_parsing_task_worker)
-        app.add_event_handler("shutdown", _stop_document_parsing_task_worker)
+        app.add_event_handler("startup", _start_layout_analysis_task_worker)
+        app.add_event_handler("shutdown", _stop_layout_analysis_task_worker)
 
     if is_extracted_image_semantic_task_worker_enabled():
         extracted_image_semantic_worker = get_extracted_image_semantic_task_worker()

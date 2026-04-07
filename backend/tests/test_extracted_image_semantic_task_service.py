@@ -299,17 +299,19 @@ class ExtractedImageSemanticTaskExecutionTests(TestCase):
         session = _WorkerSessionStub(task=task, image=image)
 
         with patch.object(service, "Session", return_value=session):
-            with patch.object(
-                service,
-                "execute_extracted_image_semantic_recognition",
-                return_value=SimpleNamespace(
-                    succeeded=True,
-                    description="fresh description",
-                    result_model="qwen-test",
-                ),
-            ):
-                service.execute_extracted_image_semantic_task(task.id, client=object(), storage=object())
+            with patch.object(service, "_synchronize_document_parsing_tasks") as synchronize_mock:
+                with patch.object(
+                    service,
+                    "execute_extracted_image_semantic_recognition",
+                    return_value=SimpleNamespace(
+                        succeeded=True,
+                        description="fresh description",
+                        result_model="qwen-test",
+                    ),
+                ):
+                    service.execute_extracted_image_semantic_task(task.id, client=object(), storage=object())
 
+        synchronize_mock.assert_called_once_with(task.id)
         self.assertTrue(session.committed)
         self.assertEqual(task.status, ExtractedImageSemanticTaskStatus.succeeded)
         self.assertEqual(task.description, "fresh description")
@@ -327,17 +329,19 @@ class ExtractedImageSemanticTaskExecutionTests(TestCase):
         session = _WorkerSessionStub(task=task, image=image)
 
         with patch.object(service, "Session", return_value=session):
-            with patch.object(
-                service,
-                "execute_extracted_image_semantic_recognition",
-                return_value=SimpleNamespace(
-                    succeeded=True,
-                    description="new description",
-                    result_model="new-model",
-                ),
-            ):
-                service.execute_extracted_image_semantic_task(task.id, client=object(), storage=object())
+            with patch.object(service, "_synchronize_document_parsing_tasks") as synchronize_mock:
+                with patch.object(
+                    service,
+                    "execute_extracted_image_semantic_recognition",
+                    return_value=SimpleNamespace(
+                        succeeded=True,
+                        description="new description",
+                        result_model="new-model",
+                    ),
+                ):
+                    service.execute_extracted_image_semantic_task(task.id, client=object(), storage=object())
 
+        synchronize_mock.assert_called_once_with(task.id)
         self.assertTrue(session.committed)
         self.assertEqual(task.status, ExtractedImageSemanticTaskStatus.succeeded)
         self.assertEqual(task.description, "new description")
@@ -355,17 +359,19 @@ class ExtractedImageSemanticTaskExecutionTests(TestCase):
         session = _WorkerSessionStub(task=task, image=image)
 
         with patch.object(service, "Session", return_value=session):
-            with patch.object(
-                service,
-                "execute_extracted_image_semantic_recognition",
-                return_value=SimpleNamespace(
-                    succeeded=True,
-                    description="new description",
-                    result_model="new-model",
-                ),
-            ):
-                service.execute_extracted_image_semantic_task(task.id, client=object(), storage=object())
+            with patch.object(service, "_synchronize_document_parsing_tasks") as synchronize_mock:
+                with patch.object(
+                    service,
+                    "execute_extracted_image_semantic_recognition",
+                    return_value=SimpleNamespace(
+                        succeeded=True,
+                        description="new description",
+                        result_model="new-model",
+                    ),
+                ):
+                    service.execute_extracted_image_semantic_task(task.id, client=object(), storage=object())
 
+        synchronize_mock.assert_called_once_with(task.id)
         self.assertTrue(session.committed)
         self.assertEqual(image.semantic_description, "new description")
         self.assertEqual(image.semantic_description_model, "new-model")
@@ -380,18 +386,21 @@ class ExtractedImageSemanticTaskExecutionTests(TestCase):
         session = _WorkerSessionStub(task=task, image=image)
 
         with patch.object(service, "Session", return_value=session):
-            with patch.object(
-                service,
-                "execute_extracted_image_semantic_recognition",
-                return_value=SimpleNamespace(
-                    succeeded=False,
-                    error_message="upstream failed",
-                ),
-            ):
-                service.execute_extracted_image_semantic_task(task.id, client=object(), storage=object())
+            with patch.object(service, "_synchronize_document_parsing_tasks") as synchronize_mock:
+                with patch.object(
+                    service,
+                    "execute_extracted_image_semantic_recognition",
+                    return_value=SimpleNamespace(
+                        succeeded=False,
+                        error_message="upstream failed",
+                    ),
+                ):
+                    service.execute_extracted_image_semantic_task(task.id, client=object(), storage=object())
 
+        synchronize_mock.assert_called_once_with(task.id)
         self.assertTrue(session.committed)
         self.assertEqual(task.status, ExtractedImageSemanticTaskStatus.failed)
         self.assertEqual(task.error_message, "upstream failed")
         self.assertEqual(image.semantic_description, "existing description")
         self.assertEqual(image.semantic_description_model, "old-model")
+
