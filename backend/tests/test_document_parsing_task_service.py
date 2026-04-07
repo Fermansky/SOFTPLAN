@@ -484,3 +484,302 @@ class DocumentParsingTaskExecutionTests(TestCase):
         self.assertTrue(session.committed)
         self.assertEqual(task.status, DocumentParsingTaskStatus.failed)
         self.assertEqual(task.error_message, "Failed to dispatch extracted image semantic tasks")
+
+
+class _WorkerSessionWithSourceStub(_WorkerSessionStub):
+    def __init__(self, *, task: DocumentParsingTask | None, source_task: DocumentParsingTask | None, exec_all_values=None):
+        super().__init__(task=task, exec_all_values=exec_all_values)
+        self.source_task = source_task
+
+    def get(self, model, item_id):
+        if model is service.DocumentParsingTask:
+            if self.task is not None and self.task.id == item_id:
+                return self.task
+            if self.source_task is not None and self.source_task.id == item_id:
+                return self.source_task
+        return None
+
+
+class DocumentParsingTaskReuseTests(TestCase):
+    def test_create_or_reuse_document_parsing_task_reuses_successful_full_task(self):
+        existing = DocumentParsingTask(
+            document_id=uuid4(),
+            file_id=uuid4(),
+            storage_bucket="softplan",
+            storage_key="documents/2026/04/a.pdf",
+            requested_pdf_model="marker",
+            target_pdf_model="marker",
+            pdf_model_key="marker",
+            requested_image_model="vision-model",
+            target_image_model="vision-model",
+            image_model_key="vision-model",
+            status=DocumentParsingTaskStatus.succeeded,
+            markdown="# done",
+            image_hashes={"img-1": "a" * 64},
+            semantic_dispatches=[
+                {
+                    "source_key": "img-1",
+                    "file_hash": "a" * 64,
+                    "image_id": 1,
+                    "semantic_task_id": str(uuid4()),
+                    "dispatch_status": "submitted",
+                    "target_model": "vision-model",
+                }
+            ],
+        )
+        session = _SessionStub(existing_task=None)
+
+        with patch.object(service, "get_active_document_parsing_task_for_document", return_value=None), patch.object(
+            service,
+            "get_latest_succeeded_document_parsing_task_for_file_pdf_image",
+            return_value=existing,
+        ) as full_mock, patch.object(service, "get_latest_succeeded_document_parsing_task_for_file_pdf") as pdf_mock:
+            result = service.create_or_reuse_document_parsing_task(
+                session,
+                document_id=uuid4(),
+                file_id=existing.file_id,
+                storage_bucket="softplan",
+                storage_key="documents/2026/04/b.pdf",
+                requested_pdf_model="marker",
+                requested_image_model="vision-model",
+                dispatch_semantic_tasks=True,
+            )
+
+        self.assertTrue(result.reused)
+        self.assertEqual(result.task, existing)
+        self.assertEqual(session.added, [])
+        self.assertFalse(session.committed)
+        full_mock.assert_called_once()
+        pdf_mock.assert_not_called()
+
+    def test_create_or_reuse_document_parsing_task_creates_new_task_with_pdf_result_source(self):
+        source_task = DocumentParsingTask(
+            id=uuid4(),
+            document_id=uuid4(),
+            file_id=uuid4(),
+            storage_bucket="softplan",
+            storage_key="documents/2026/04/a.pdf",
+            requested_pdf_model="marker",
+            target_pdf_model="marker",
+            pdf_model_key="marker",
+            status=DocumentParsingTaskStatus.succeeded,
+            markdown="# cached",
+            image_hashes={"img-1": "a" * 64},
+        )
+        session = _SessionStub(existing_task=None)
+
+        with patch.object(service, "get_active_document_parsing_task_for_document", return_value=None), patch.object(
+            service,
+            "get_latest_succeeded_document_parsing_task_for_file_pdf_image",
+            return_value=None,
+        ), patch.object(
+            service,
+            "get_latest_succeeded_document_parsing_task_for_file_pdf",
+            return_value=source_task,
+        ):
+            result = service.create_or_reuse_document_parsing_task(
+                session,
+                document_id=uuid4(),
+                file_id=source_task.file_id,
+                storage_bucket="softplan",
+                storage_key="documents/2026/04/b.pdf",
+                requested_pdf_model="marker",
+                requested_image_model="other-vision-model",
+                dispatch_semantic_tasks=True,
+            )
+
+        self.assertFalse(result.reused)
+        self.assertEqual(result.task.pdf_result_source_task_id, source_task.id)
+        self.assertFalse(result.task.force_pdf_parse)
+        self.assertTrue(session.committed)
+
+    def test_create_or_reuse_document_parsing_task_force_pdf_parse_skips_success_reuse(self):
+        session = _SessionStub(existing_task=None)
+
+        with patch.object(service, "get_active_document_parsing_task_for_document", return_value=None), patch.object(
+            service,
+            "get_latest_succeeded_document_parsing_task_for_file_pdf_image",
+        ) as full_mock, patch.object(service, "get_latest_succeeded_document_parsing_task_for_file_pdf") as pdf_mock:
+            result = service.create_or_reuse_document_parsing_task(
+                session,
+                document_id=uuid4(),
+                file_id=uuid4(),
+                storage_bucket="softplan",
+                storage_key="documents/2026/04/a.pdf",
+                requested_pdf_model="marker",
+                requested_image_model="vision-model",
+                force_pdf_parse=True,
+                dispatch_semantic_tasks=True,
+            )
+
+        self.assertFalse(result.reused)
+        self.assertTrue(result.task.force_pdf_parse)
+        self.assertIsNone(result.task.pdf_result_source_task_id)
+        full_mock.assert_not_called()
+        pdf_mock.assert_not_called()
+
+    def test_execute_document_parsing_task_reuses_cached_pdf_result(self):
+        task_id = uuid4()
+        source_task_id = uuid4()
+        task = DocumentParsingTask(
+            id=task_id,
+            document_id=uuid4(),
+            file_id=uuid4(),
+            storage_bucket="softplan",
+            storage_key="documents/2026/04/a.pdf",
+            requested_pdf_model="marker",
+            target_pdf_model="marker",
+            pdf_model_key="marker",
+            requested_image_model="vision-model",
+            target_image_model="vision-model",
+            image_model_key="vision-model",
+            pdf_result_source_task_id=source_task_id,
+            status=DocumentParsingTaskStatus.running,
+        )
+        source_task = DocumentParsingTask(
+            id=source_task_id,
+            document_id=uuid4(),
+            file_id=task.file_id,
+            storage_bucket="softplan",
+            storage_key="documents/2026/04/a.pdf",
+            requested_pdf_model="marker",
+            target_pdf_model="marker",
+            pdf_model_key="marker",
+            status=DocumentParsingTaskStatus.succeeded,
+            markdown="# cached",
+            image_hashes={"img-1": "a" * 64},
+        )
+        extracted_image = ExtractedImage(
+            id=1,
+            file_hash="a" * 64,
+            storage_bucket="softplan",
+            storage_key="images/a.png",
+            file_size=123,
+            content_type="image/png",
+            extension=".png",
+            width=100,
+            height=100,
+        )
+        semantic_task = ExtractedImageSemanticTask(
+            id=uuid4(),
+            extracted_image_id=1,
+            status=ExtractedImageSemanticTaskStatus.pending,
+            target_model="vision-model",
+            target_model_key="vision-model",
+            prompt_path="backend/app/prompts/extracted_image_semantic.txt",
+        )
+        session = _WorkerSessionWithSourceStub(task=task, source_task=source_task, exec_all_values=[[extracted_image]])
+        client_calls = []
+
+        with patch.object(service, "Session", return_value=session), patch.object(
+            service,
+            "persist_extracted_images",
+        ) as persist_mock, patch.object(
+            service,
+            "create_or_reuse_extracted_image_semantic_task",
+            return_value=SimpleNamespace(task=semantic_task, reused=False),
+        ):
+            service.execute_document_parsing_task(
+                task.id,
+                client=SimpleNamespace(
+                    convert_pdf_to_markdown=lambda **kwargs: client_calls.append(kwargs) or (None, "should not be called")
+                ),
+            )
+
+        self.assertEqual(client_calls, [])
+        persist_mock.assert_not_called()
+        self.assertEqual(task.status, DocumentParsingTaskStatus.succeeded)
+        self.assertEqual(task.markdown, "# cached")
+        self.assertEqual(task.image_hashes, {"img-1": "a" * 64})
+        self.assertEqual(task.pdf_result_source_task_id, source_task_id)
+        self.assertEqual(task.semantic_dispatches[0]["dispatch_status"], "submitted")
+
+    def test_execute_document_parsing_task_falls_back_when_cached_pdf_source_is_invalid(self):
+        task_id = uuid4()
+        source_task_id = uuid4()
+        task = DocumentParsingTask(
+            id=task_id,
+            document_id=uuid4(),
+            file_id=uuid4(),
+            storage_bucket="softplan",
+            storage_key="documents/2026/04/a.pdf",
+            requested_pdf_model="marker",
+            target_pdf_model="marker",
+            pdf_model_key="marker",
+            requested_image_model="vision-model",
+            target_image_model="vision-model",
+            image_model_key="vision-model",
+            pdf_result_source_task_id=source_task_id,
+            status=DocumentParsingTaskStatus.running,
+        )
+        source_task = DocumentParsingTask(
+            id=source_task_id,
+            document_id=uuid4(),
+            file_id=task.file_id,
+            storage_bucket="softplan",
+            storage_key="documents/2026/04/a.pdf",
+            requested_pdf_model="marker",
+            target_pdf_model="marker",
+            pdf_model_key="marker",
+            status=DocumentParsingTaskStatus.failed,
+        )
+        uploaded_image = UploadedImageMetadata(
+            source_key="img-1",
+            file_hash="a" * 64,
+            storage_bucket="softplan",
+            storage_key="images/a.png",
+            file_size=123,
+            content_type="image/png",
+            extension=".png",
+            width=100,
+            height=100,
+        )
+        extracted_image = ExtractedImage(
+            id=1,
+            file_hash="a" * 64,
+            storage_bucket="softplan",
+            storage_key="images/a.png",
+            file_size=123,
+            content_type="image/png",
+            extension=".png",
+            width=100,
+            height=100,
+        )
+        session = _WorkerSessionWithSourceStub(task=task, source_task=source_task, exec_all_values=[[extracted_image]])
+        client_calls = []
+
+        with patch.object(service, "Session", return_value=session), patch.object(service, "persist_extracted_images") as persist_mock, patch.object(
+            service,
+            "create_or_reuse_extracted_image_semantic_task",
+            return_value=SimpleNamespace(
+                task=ExtractedImageSemanticTask(
+                    id=uuid4(),
+                    extracted_image_id=1,
+                    status=ExtractedImageSemanticTaskStatus.pending,
+                    target_model="vision-model",
+                    target_model_key="vision-model",
+                    prompt_path="backend/app/prompts/extracted_image_semantic.txt",
+                ),
+                reused=False,
+            ),
+        ):
+            service.execute_document_parsing_task(
+                task.id,
+                client=SimpleNamespace(
+                    convert_pdf_to_markdown=lambda **kwargs: client_calls.append(kwargs)
+                    or (
+                        PdfToMarkdownResult(
+                            markdown="# live",
+                            image_hashes={"img-1": uploaded_image.file_hash},
+                            uploaded_images=[uploaded_image],
+                        ),
+                        None,
+                    )
+                ),
+            )
+
+        self.assertEqual(len(client_calls), 1)
+        persist_mock.assert_called_once()
+        self.assertEqual(task.status, DocumentParsingTaskStatus.succeeded)
+        self.assertEqual(task.markdown, "# live")
+        self.assertIsNone(task.pdf_result_source_task_id)

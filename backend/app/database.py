@@ -82,6 +82,8 @@ def _ensure_document_parsing_task_columns() -> None:
             "ALTER TABLE document_parsing_tasks "
             f"ADD COLUMN IF NOT EXISTS image_model_key TEXT NOT NULL DEFAULT '{DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY}'"
         ),
+        "ALTER TABLE document_parsing_tasks ADD COLUMN IF NOT EXISTS force_pdf_parse BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE document_parsing_tasks ADD COLUMN IF NOT EXISTS pdf_result_source_task_id UUID",
         (
             "UPDATE document_parsing_tasks "
             f"SET target_pdf_model = '{DEFAULT_DOCUMENT_PARSING_PDF_MODEL}' "
@@ -98,10 +100,22 @@ def _ensure_document_parsing_task_columns() -> None:
             "WHERE image_model_key IS NULL"
         ),
         "DROP INDEX IF EXISTS ux_document_parsing_tasks_document_active",
+        "DROP INDEX IF EXISTS ix_document_parsing_tasks_success_by_file_pdf",
+        "DROP INDEX IF EXISTS ix_document_parsing_tasks_success_by_file_pdf_image",
         (
             "CREATE UNIQUE INDEX ux_document_parsing_tasks_document_active "
             "ON document_parsing_tasks (document_id, pdf_model_key, image_model_key) "
             "WHERE status IN ('pending', 'running')"
+        ),
+        (
+            "CREATE INDEX ix_document_parsing_tasks_success_by_file_pdf "
+            "ON document_parsing_tasks (file_id, pdf_model_key, created_at DESC) "
+            "WHERE status = 'succeeded'"
+        ),
+        (
+            "CREATE INDEX ix_document_parsing_tasks_success_by_file_pdf_image "
+            "ON document_parsing_tasks (file_id, pdf_model_key, image_model_key, created_at DESC) "
+            "WHERE status = 'succeeded'"
         ),
     ]
     with engine.begin() as connection:

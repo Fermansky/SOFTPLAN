@@ -593,3 +593,153 @@ class ConvertersRouterTests(TestCase):
                     )
 
         self.assertEqual(ctx.exception.status_code, 502)
+
+
+class DocumentParsingRouterReuseTests(TestCase):
+    def _build_pdf_document_and_file(self) -> tuple[Document, FileRecord]:
+        document = Document(project_id=uuid4(), file_id=uuid4(), name="PRD")
+        file_record = FileRecord(
+            file_hash="hash",
+            storage_bucket="softplan",
+            storage_key="documents/2026/04/a.pdf",
+            file_size=10,
+            content_type="application/pdf",
+            extension=".pdf",
+        )
+        return document, file_record
+
+    def test_create_document_parsing_task_passes_force_flag_and_exposes_pdf_result_reuse(self):
+        document, file_record = self._build_pdf_document_and_file()
+        source_task_id = uuid4()
+        task = DocumentParsingTask(
+            document_id=document.id,
+            file_id=file_record.id,
+            storage_bucket=file_record.storage_bucket,
+            storage_key=file_record.storage_key,
+            requested_pdf_model="marker",
+            target_pdf_model="marker",
+            pdf_model_key="marker",
+            requested_image_model="vision-model",
+            target_image_model="vision-model",
+            image_model_key="vision-model",
+            force_pdf_parse=True,
+            pdf_result_source_task_id=source_task_id,
+            status=DocumentParsingTaskStatus.pending,
+        )
+
+        with patch.object(document_parsing, "get_active_document_or_404", return_value=document), patch.object(
+            document_parsing,
+            "get_file_or_404",
+            return_value=file_record,
+        ), patch.object(
+            document_parsing,
+            "create_or_reuse_document_parsing_task",
+            return_value=SimpleNamespace(task=task, reused=False),
+        ) as create_mock:
+            response = document_parsing.create_document_parsing_task(
+                payload=document_parsing.DocumentParsingTaskCreateRequest(
+                    document_id=document.id,
+                    pdf_model="marker",
+                    image_model="vision-model",
+                    force_pdf_parse=True,
+                ),
+                session=_SessionStub(),
+            )
+
+        self.assertTrue(create_mock.call_args.kwargs["force_pdf_parse"])
+        self.assertTrue(create_mock.call_args.kwargs["dispatch_semantic_tasks"])
+        self.assertTrue(response.force_pdf_parse)
+        self.assertEqual(response.pdf_result_source_task_id, source_task_id)
+        self.assertTrue(response.pdf_result_reused)
+
+    def test_create_pdf_to_markdown_task_passes_force_flag_and_disables_semantic_dispatch(self):
+        document, file_record = self._build_pdf_document_and_file()
+        task = DocumentParsingTask(
+            document_id=document.id,
+            file_id=file_record.id,
+            storage_bucket=file_record.storage_bucket,
+            storage_key=file_record.storage_key,
+            requested_pdf_model="marker",
+            target_pdf_model="marker",
+            pdf_model_key="marker",
+            force_pdf_parse=False,
+            status=DocumentParsingTaskStatus.succeeded,
+            markdown="# done",
+        )
+
+        with patch.object(document_parsing, "get_active_document_or_404", return_value=document), patch.object(
+            document_parsing,
+            "get_file_or_404",
+            return_value=file_record,
+        ), patch.object(
+            document_parsing,
+            "create_or_reuse_document_parsing_task",
+            return_value=SimpleNamespace(task=task, reused=True),
+        ) as create_mock:
+            response = document_parsing.create_pdf_to_markdown_task(
+                payload=document_parsing.PdfToMarkdownTaskCreateRequest(
+                    document_id=document.id,
+                    pdf_model="marker",
+                    force_pdf_parse=False,
+                ),
+                session=_SessionStub(),
+            )
+
+        self.assertFalse(create_mock.call_args.kwargs["dispatch_semantic_tasks"])
+        self.assertFalse(create_mock.call_args.kwargs["force_pdf_parse"])
+        self.assertTrue(response.reused)
+        self.assertFalse(response.pdf_result_reused)
+
+    def test_get_document_parsing_document_result_exposes_pdf_result_reuse_fields(self):
+        document, file_record = self._build_pdf_document_and_file()
+        source_task_id = uuid4()
+        task = DocumentParsingTask(
+            document_id=document.id,
+            file_id=file_record.id,
+            storage_bucket=file_record.storage_bucket,
+            storage_key=file_record.storage_key,
+            requested_pdf_model="marker",
+            target_pdf_model="marker",
+            pdf_model_key="marker",
+            requested_image_model="vision-model",
+            target_image_model="vision-model",
+            image_model_key="vision-model",
+            force_pdf_parse=False,
+            pdf_result_source_task_id=source_task_id,
+            status=DocumentParsingTaskStatus.succeeded,
+            markdown="# done",
+            image_hashes={"img-1": "hash-1"},
+            semantic_dispatches=[
+                {
+                    "source_key": "img-1",
+                    "file_hash": "hash-1",
+                    "image_id": 1,
+                    "semantic_task_id": str(uuid4()),
+                    "dispatch_status": "submitted",
+                    "target_model": "vision-model",
+                }
+            ],
+        )
+
+        with patch.object(document_parsing, "get_active_document_or_404", return_value=document), patch.object(
+            document_parsing,
+            "get_file_or_404",
+            return_value=file_record,
+        ), patch.object(document_parsing, "get_latest_document_parsing_task_for_document_file", return_value=task):
+            response = document_parsing.get_document_parsing_document_result(
+                document_id=document.id,
+                session=_SessionStub(),
+            )
+
+        self.assertFalse(response.force_pdf_parse)
+        self.assertEqual(response.pdf_result_source_task_id, source_task_id)
+        self.assertTrue(response.pdf_result_reused)
+
+    def test_sync_pdf_to_markdown_route_is_marked_deprecated(self):
+        route = next(
+            route
+            for route in document_parsing.router.routes
+            if getattr(route, "path", None) == "/document-parsing/pdf-to-markdown" and "POST" in getattr(route, "methods", set())
+        )
+
+        self.assertTrue(route.deprecated)

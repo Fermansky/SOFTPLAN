@@ -58,6 +58,7 @@ class PdfToMarkdownParseRead(BaseModel):
 class PdfToMarkdownTaskCreateRequest(BaseModel):
     document_id: UUID
     pdf_model: str | None = None
+    force_pdf_parse: bool = False
 
 
 class PdfToMarkdownTaskRead(BaseModel):
@@ -69,6 +70,9 @@ class PdfToMarkdownTaskRead(BaseModel):
     requested_pdf_model: str | None = None
     target_pdf_model: str
     pdf_model_key: str
+    force_pdf_parse: bool = False
+    pdf_result_source_task_id: UUID | None = None
+    pdf_result_reused: bool = False
     status: DocumentParsingTaskStatus
     attempt_count: int
     reused: bool = False
@@ -98,6 +102,9 @@ class PdfToMarkdownDocumentResultRead(BaseModel):
     requested_pdf_model: str | None = None
     target_pdf_model: str | None = None
     pdf_model_key: str | None = None
+    force_pdf_parse: bool = False
+    pdf_result_source_task_id: UUID | None = None
+    pdf_result_reused: bool = False
     markdown: str | None = None
     image_hashes: dict[str, str] = Field(default_factory=dict)
     error_message: str | None = None
@@ -126,6 +133,7 @@ class DocumentParsingTaskCreateRequest(BaseModel):
     document_id: UUID
     pdf_model: str | None = None
     image_model: str | None = None
+    force_pdf_parse: bool = False
 
 
 class DocumentParsingTaskRead(BaseModel):
@@ -140,6 +148,9 @@ class DocumentParsingTaskRead(BaseModel):
     requested_image_model: str | None = None
     target_image_model: str | None = None
     image_model_key: str
+    force_pdf_parse: bool = False
+    pdf_result_source_task_id: UUID | None = None
+    pdf_result_reused: bool = False
     status: DocumentParsingTaskStatus
     attempt_count: int
     reused: bool = False
@@ -176,6 +187,9 @@ class DocumentParsingDocumentResultRead(BaseModel):
     requested_image_model: str | None = None
     target_image_model: str | None = None
     image_model_key: str | None = None
+    force_pdf_parse: bool = False
+    pdf_result_source_task_id: UUID | None = None
+    pdf_result_reused: bool = False
     markdown: str | None = None
     image_hashes: dict[str, str] = Field(default_factory=dict)
     semantic_dispatches: list[DocumentParsingSemanticDispatchRead] = Field(default_factory=list)
@@ -201,11 +215,13 @@ def _resolve_pdf_file_record(document_id: UUID, session: Session) -> tuple[UUID,
     return document.id, file_record
 
 
+
 def _resolve_pdf_model_selection_or_422(pdf_model: str | None):
     try:
         return resolve_document_parsing_pdf_model_selection(pdf_model)
     except UnsupportedDocumentParsingPdfModelError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
 
 
 def _build_semantic_dispatch_reads(
@@ -214,6 +230,7 @@ def _build_semantic_dispatch_reads(
     if not semantic_dispatches:
         return []
     return [DocumentParsingSemanticDispatchRead.model_validate(dispatch) for dispatch in semantic_dispatches]
+
 
 
 def _count_semantic_dispatches(
@@ -229,6 +246,12 @@ def _count_semantic_dispatches(
     return submitted, reused, skipped
 
 
+
+def _is_pdf_result_reused(task: DocumentParsingTask) -> bool:
+    return task.pdf_result_source_task_id is not None
+
+
+
 def _to_task_read(task: DocumentParsingTask, *, reused: bool = False) -> PdfToMarkdownTaskRead:
     return PdfToMarkdownTaskRead(
         id=task.id,
@@ -239,6 +262,9 @@ def _to_task_read(task: DocumentParsingTask, *, reused: bool = False) -> PdfToMa
         requested_pdf_model=task.requested_pdf_model,
         target_pdf_model=task.target_pdf_model,
         pdf_model_key=task.pdf_model_key,
+        force_pdf_parse=task.force_pdf_parse,
+        pdf_result_source_task_id=task.pdf_result_source_task_id,
+        pdf_result_reused=_is_pdf_result_reused(task),
         status=task.status,
         attempt_count=task.attempt_count,
         reused=reused,
@@ -250,6 +276,7 @@ def _to_task_read(task: DocumentParsingTask, *, reused: bool = False) -> PdfToMa
         finished_at=task.finished_at,
         updated_at=task.updated_at,
     )
+
 
 
 def _to_document_parsing_task_read(task: DocumentParsingTask, *, reused: bool = False) -> DocumentParsingTaskRead:
@@ -267,6 +294,9 @@ def _to_document_parsing_task_read(task: DocumentParsingTask, *, reused: bool = 
         requested_image_model=task.requested_image_model,
         target_image_model=task.target_image_model,
         image_model_key=task.image_model_key,
+        force_pdf_parse=task.force_pdf_parse,
+        pdf_result_source_task_id=task.pdf_result_source_task_id,
+        pdf_result_reused=_is_pdf_result_reused(task),
         status=task.status,
         attempt_count=task.attempt_count,
         reused=reused,
@@ -323,6 +353,8 @@ def create_document_parsing_task(
             storage_key=file_record.storage_key,
             requested_pdf_model=payload.pdf_model,
             requested_image_model=payload.image_model,
+            force_pdf_parse=payload.force_pdf_parse,
+            dispatch_semantic_tasks=True,
         )
     except UnsupportedDocumentParsingPdfModelError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -346,6 +378,8 @@ def create_document_parsing_task(
             file_id=str(file_record.id),
             task_id=str(submission.task.id),
             reused=submission.reused,
+            force_pdf_parse=payload.force_pdf_parse,
+            pdf_result_reused=_is_pdf_result_reused(submission.task),
             pdf_model=submission.task.target_pdf_model,
             image_model=submission.task.target_image_model,
         ),
@@ -402,6 +436,9 @@ def get_document_parsing_document_result(
         requested_image_model=task.requested_image_model,
         target_image_model=task.target_image_model,
         image_model_key=task.image_model_key,
+        force_pdf_parse=task.force_pdf_parse,
+        pdf_result_source_task_id=task.pdf_result_source_task_id,
+        pdf_result_reused=_is_pdf_result_reused(task),
         markdown=task.markdown if task.status == DocumentParsingTaskStatus.succeeded else None,
         image_hashes=task.image_hashes if task.status == DocumentParsingTaskStatus.succeeded else {},
         semantic_dispatches=semantic_dispatches,
@@ -431,6 +468,8 @@ def create_pdf_to_markdown_task(
             storage_bucket=file_record.storage_bucket,
             storage_key=file_record.storage_key,
             requested_pdf_model=payload.pdf_model,
+            force_pdf_parse=payload.force_pdf_parse,
+            dispatch_semantic_tasks=False,
         )
     except UnsupportedDocumentParsingPdfModelError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -454,6 +493,8 @@ def create_pdf_to_markdown_task(
             file_id=str(file_record.id),
             task_id=str(submission.task.id),
             reused=submission.reused,
+            force_pdf_parse=payload.force_pdf_parse,
+            pdf_result_reused=_is_pdf_result_reused(submission.task),
             pdf_model=submission.task.target_pdf_model,
         ),
     )
@@ -499,6 +540,9 @@ def get_pdf_to_markdown_document_result(
         requested_pdf_model=task.requested_pdf_model,
         target_pdf_model=task.target_pdf_model,
         pdf_model_key=task.pdf_model_key,
+        force_pdf_parse=task.force_pdf_parse,
+        pdf_result_source_task_id=task.pdf_result_source_task_id,
+        pdf_result_reused=_is_pdf_result_reused(task),
         markdown=task.markdown if task.status == DocumentParsingTaskStatus.succeeded else None,
         image_hashes=task.image_hashes if task.status == DocumentParsingTaskStatus.succeeded else {},
         error_message=task.error_message if task.status == DocumentParsingTaskStatus.failed else None,
@@ -509,12 +553,13 @@ def get_pdf_to_markdown_document_result(
     )
 
 
-@router.post("/pdf-to-markdown", response_model=PdfToMarkdownParseRead)
+@router.post("/pdf-to-markdown", response_model=PdfToMarkdownParseRead, deprecated=True)
 def parse_pdf_to_markdown(
     payload: PdfToMarkdownParseRequest,
     session: Session = Depends(get_session),
     client: FileConvertServiceClient = Depends(get_file_convert_service_client),
 ) -> PdfToMarkdownParseRead:
+    """同步解析接口，保留兼容性并在 OpenAPI 中标记为废弃。"""
     document_id, file_record = _resolve_pdf_file_record(payload.document_id, session)
     pdf_model_selection = _resolve_pdf_model_selection_or_422(payload.pdf_model)
 
@@ -575,3 +620,4 @@ def parse_pdf_to_markdown(
         markdown=parsing_result.markdown if parsing_result is not None else "",
         image_hashes=parsing_result.image_hashes if parsing_result is not None else {},
     )
+

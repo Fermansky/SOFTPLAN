@@ -1,4 +1,4 @@
-﻿"""文档解析任务编排服务。
+"""文档解析任务编排服务。
 
 职责：
 1. 创建、复用、领取与执行文档解析任务。
@@ -14,7 +14,7 @@
 import asyncio
 import logging
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from uuid import UUID
@@ -57,6 +57,14 @@ class DocumentParsingModelSelection:
     requested_model: str | None
     target_model: str | None
     model_key: str
+
+
+@dataclass(frozen=True)
+class DocumentParsingImageRef:
+    """用于图片语义派发的轻量图片引用。"""
+
+    source_key: str
+    file_hash: str
 
 
 class DocumentParsingSemanticDispatchError(RuntimeError):
@@ -160,46 +168,83 @@ def _load_extracted_images_by_hash(
 
 
 
-def _dispatch_semantic_tasks_for_uploaded_images(
+def _build_image_refs_from_uploaded_images(uploaded_images: Sequence[UploadedImageMetadata]) -> list[DocumentParsingImageRef]:
+    """将下游上传结果转换为统一图片引用。"""
+    return [DocumentParsingImageRef(source_key=image.source_key, file_hash=image.file_hash) for image in uploaded_images if image.file_hash]
+
+
+
+def _build_image_refs_from_image_hashes(image_hashes: Mapping[str, str] | None) -> list[DocumentParsingImageRef]:
+    """将缓存的 image_hashes 映射转换为统一图片引用。"""
+    if not image_hashes:
+        return []
+    return [
+        DocumentParsingImageRef(source_key=source_key, file_hash=file_hash)
+        for source_key, file_hash in image_hashes.items()
+        if source_key and file_hash
+    ]
+
+
+
+def _task_has_complete_semantic_result(task: DocumentParsingTask) -> bool:
+    """判断任务是否已具备可直接复用的完整文档解析结果。"""
+    if task.status != DocumentParsingTaskStatus.succeeded:
+        return False
+
+    image_hashes = task.image_hashes or {}
+    if not image_hashes:
+        return True
+
+    if not task.semantic_dispatches:
+        return False
+
+    dispatched_source_keys = {
+        str(dispatch.get("source_key"))
+        for dispatch in task.semantic_dispatches
+        if isinstance(dispatch, dict) and dispatch.get("source_key")
+    }
+    return set(image_hashes.keys()).issubset(dispatched_source_keys)
+
+
+
+def _is_reusable_pdf_result_source(task: DocumentParsingTask | None) -> bool:
+    """判断任务是否可作为 PDF 结果缓存来源。"""
+    if task is None or task.status != DocumentParsingTaskStatus.succeeded:
+        return False
+    return task.markdown is not None and task.image_hashes is not None
+
+
+
+def _dispatch_semantic_tasks_for_image_refs(
     session: Session,
     *,
-    uploaded_images: Sequence[UploadedImageMetadata],
+    image_refs: Sequence[DocumentParsingImageRef],
     request_id: str,
     requested_image_model: str | None,
     target_image_model: str | None,
 ) -> list[dict[str, object | None]]:
-    """为本次文档解析生成的图片分发语义任务。
-
-    约束：
-    - 已有语义快照的图片直接跳过。
-    - 无快照图片会创建或复用对应的抽取图片语义任务。
-
-    失败语义：
-    - 图片持久化后查不回记录时抛 `DocumentParsingSemanticDispatchError`。
-    """
-    if not uploaded_images:
+    """为给定图片引用分发语义任务。"""
+    if not image_refs:
         return []
 
-    # 使用数据库中的规范化图片记录继续分发，避免直接依赖瞬时上传元数据。
     images_by_hash = _load_extracted_images_by_hash(
         session,
-        file_hashes=[uploaded_image.file_hash for uploaded_image in uploaded_images],
+        file_hashes=[image_ref.file_hash for image_ref in image_refs],
     )
 
     semantic_dispatches: list[dict[str, object | None]] = []
-    for uploaded_image in uploaded_images:
-        extracted_image = images_by_hash.get(uploaded_image.file_hash)
+    for image_ref in image_refs:
+        extracted_image = images_by_hash.get(image_ref.file_hash)
         if extracted_image is None or extracted_image.id is None:
             raise DocumentParsingSemanticDispatchError(
-                f"Extracted image not found after persistence for hash={uploaded_image.file_hash}"
+                f"Extracted image not found after persistence for hash={image_ref.file_hash}"
             )
 
-        # 已有图片级语义快照时，不再重复派发子任务，只记录跳过原因。
         if _has_semantic_snapshot(extracted_image):
             semantic_dispatches.append(
                 {
-                    "source_key": uploaded_image.source_key,
-                    "file_hash": uploaded_image.file_hash,
+                    "source_key": image_ref.source_key,
+                    "file_hash": image_ref.file_hash,
                     "image_id": extracted_image.id,
                     "semantic_task_id": None,
                     "dispatch_status": "skipped_existing_snapshot",
@@ -212,7 +257,6 @@ def _dispatch_semantic_tasks_for_uploaded_images(
             session,
             extracted_image=extracted_image,
             requested_model=requested_image_model,
-            # 沿用文档任务创建时解析好的目标模型，避免子任务在未来因环境变化而偏离。
             target_model=target_image_model,
             use_target_model=True,
             request_id=request_id,
@@ -220,8 +264,8 @@ def _dispatch_semantic_tasks_for_uploaded_images(
         )
         semantic_dispatches.append(
             {
-                "source_key": uploaded_image.source_key,
-                "file_hash": uploaded_image.file_hash,
+                "source_key": image_ref.source_key,
+                "file_hash": image_ref.file_hash,
                 "image_id": extracted_image.id,
                 "semantic_task_id": str(submission.task.id),
                 "dispatch_status": "reused" if submission.reused else "submitted",
@@ -255,6 +299,52 @@ def get_active_document_parsing_task_for_document(
 
 
 
+def get_latest_succeeded_document_parsing_task_for_file_pdf(
+    session: Session,
+    *,
+    file_id: UUID,
+    pdf_model_key: str,
+) -> DocumentParsingTask | None:
+    """查询同一文件、同一 PDF 模型的最近成功任务。"""
+    statement = (
+        select(DocumentParsingTask)
+        .where(
+            DocumentParsingTask.file_id == file_id,
+            DocumentParsingTask.pdf_model_key == pdf_model_key,
+            DocumentParsingTask.status == DocumentParsingTaskStatus.succeeded,
+        )
+        .order_by(DocumentParsingTask.created_at.desc())
+    )
+    return session.exec(statement).first()
+
+
+
+def get_latest_succeeded_document_parsing_task_for_file_pdf_image(
+    session: Session,
+    *,
+    file_id: UUID,
+    pdf_model_key: str,
+    image_model_key: str,
+) -> DocumentParsingTask | None:
+    """查询同一文件、同一模型组合下最近可直接复用的完整成功任务。"""
+    statement = (
+        select(DocumentParsingTask)
+        .where(
+            DocumentParsingTask.file_id == file_id,
+            DocumentParsingTask.pdf_model_key == pdf_model_key,
+            DocumentParsingTask.image_model_key == image_model_key,
+            DocumentParsingTask.status == DocumentParsingTaskStatus.succeeded,
+        )
+        .order_by(DocumentParsingTask.created_at.desc())
+    )
+    tasks = list(session.exec(statement).all())
+    for task in tasks:
+        if _task_has_complete_semantic_result(task):
+            return task
+    return None
+
+
+
 def create_or_reuse_document_parsing_task(
     session: Session,
     *,
@@ -264,6 +354,8 @@ def create_or_reuse_document_parsing_task(
     storage_key: str,
     requested_pdf_model: str | None = None,
     requested_image_model: str | None = None,
+    force_pdf_parse: bool = False,
+    dispatch_semantic_tasks: bool = True,
 ) -> DocumentParsingTaskSubmissionResult:
     """创建或复用文档解析任务。
 
@@ -276,7 +368,6 @@ def create_or_reuse_document_parsing_task(
     失败语义：
     - 并发冲突时回滚并复用获胜任务；若未查回获胜任务，则继续抛出原始异常。
     """
-    # 先统一解析模型语义，确保任务去重、落库与执行看到的是同一套结果。
     pdf_model_selection = resolve_document_parsing_pdf_model_selection(requested_pdf_model)
     image_model_selection = resolve_document_parsing_image_model_selection(requested_image_model)
 
@@ -289,6 +380,26 @@ def create_or_reuse_document_parsing_task(
     if existing is not None:
         return DocumentParsingTaskSubmissionResult(task=existing, reused=True)
 
+    pdf_result_source_task: DocumentParsingTask | None = None
+    if not force_pdf_parse:
+        if dispatch_semantic_tasks:
+            completed_task = get_latest_succeeded_document_parsing_task_for_file_pdf_image(
+                session,
+                file_id=file_id,
+                pdf_model_key=pdf_model_selection.model_key,
+                image_model_key=image_model_selection.model_key,
+            )
+            if completed_task is not None:
+                return DocumentParsingTaskSubmissionResult(task=completed_task, reused=True)
+
+        pdf_result_source_task = get_latest_succeeded_document_parsing_task_for_file_pdf(
+            session,
+            file_id=file_id,
+            pdf_model_key=pdf_model_selection.model_key,
+        )
+        if pdf_result_source_task is not None and not dispatch_semantic_tasks:
+            return DocumentParsingTaskSubmissionResult(task=pdf_result_source_task, reused=True)
+
     task = DocumentParsingTask(
         document_id=document_id,
         file_id=file_id,
@@ -300,11 +411,12 @@ def create_or_reuse_document_parsing_task(
         requested_image_model=image_model_selection.requested_model,
         target_image_model=image_model_selection.target_model,
         image_model_key=image_model_selection.model_key,
+        force_pdf_parse=force_pdf_parse,
+        pdf_result_source_task_id=pdf_result_source_task.id if pdf_result_source_task is not None and dispatch_semantic_tasks else None,
         status=DocumentParsingTaskStatus.pending,
     )
     session.add(task)
     try:
-        # 让部分唯一索引裁决并发提交；若本事务败给其他提交，则回查并复用赢家。
         session.commit()
     except IntegrityError:
         session.rollback()
@@ -421,13 +533,14 @@ def execute_document_parsing_task(task_id: UUID, *, client: FileConvertServiceCl
     """执行单条文档解析任务。
 
     流程：
-    1. 调用 file-convert-service 完成 PDF 转 markdown 与图片抽取。
-    2. 落库抽取图片元数据。
-    3. 为仍缺少语义快照的图片派发语义任务。
-    4. 记录派发结果并结束顶层任务。
+    1. 优先尝试复用已有成功任务的 PDF 结果。
+    2. 若不可复用，则调用 file-convert-service 完成 PDF 转 markdown 与图片抽取。
+    3. 仅在实际执行 PDF 解析时落库抽取图片元数据。
+    4. 为仍缺少语义快照的图片派发语义任务。
+    5. 记录派发结果并结束顶层任务。
 
     副作用：
-    - 会调用 file-convert-service。
+    - 可能调用 file-convert-service。
     - 会写入 `document_parsing_tasks` 与 `extracted_images`，并可能创建抽取图片语义任务。
 
     失败语义：
@@ -444,30 +557,63 @@ def execute_document_parsing_task(task_id: UUID, *, client: FileConvertServiceCl
             logger.info("Skip document parsing task execution due to unexpected status, task_id=%s, status=%s", task_id, task.status)
             return
 
-        parsing_result, error = file_convert_client.convert_pdf_to_markdown(
-            storage_key=task.storage_key,
-            task_id=str(task.id),
-            model=task.target_pdf_model,
-        )
-        if error is not None or parsing_result is None:
-            logger.warning("document parsing task failed on file-convert-service, task_id=%s, error=%s", task_id, error)
-            _mark_task_failed(
-                session,
-                task=task,
-                error_message=error or "file-convert-service parsing failed",
+        markdown: str | None = None
+        image_hashes: dict[str, str] = {}
+        image_refs: list[DocumentParsingImageRef] = []
+
+        if task.pdf_result_source_task_id is not None:
+            source_task = session.get(DocumentParsingTask, task.pdf_result_source_task_id)
+            if _is_reusable_pdf_result_source(source_task):
+                markdown = source_task.markdown
+                image_hashes = dict(source_task.image_hashes or {})
+                image_refs = _build_image_refs_from_image_hashes(image_hashes)
+            else:
+                logger.info(
+                    "Falling back to live PDF parsing because cached source task is unavailable, task_id=%s, source_task_id=%s",
+                    task_id,
+                    task.pdf_result_source_task_id,
+                )
+                task.pdf_result_source_task_id = None
+
+        if markdown is None:
+            parsing_result, error = file_convert_client.convert_pdf_to_markdown(
+                storage_key=task.storage_key,
+                task_id=str(task.id),
+                model=task.target_pdf_model,
             )
-            return
+            if error is not None or parsing_result is None:
+                logger.warning("document parsing task failed on file-convert-service, task_id=%s, error=%s", task_id, error)
+                _mark_task_failed(
+                    session,
+                    task=task,
+                    error_message=error or "file-convert-service parsing failed",
+                )
+                return
+
+            markdown = parsing_result.markdown
+            image_hashes = dict(parsing_result.image_hashes or {})
+            image_refs = _build_image_refs_from_uploaded_images(parsing_result.uploaded_images)
+
+            try:
+                persist_extracted_images(session, uploaded_images=parsing_result.uploaded_images)
+            except (ExtractedImagePersistenceError, SQLAlchemyError):
+                logger.exception("Failed to persist extracted images for document parsing task, task_id=%s", task_id)
+                _mark_task_failed(
+                    session,
+                    task=task,
+                    error_message="Failed to persist extracted images",
+                )
+                return
 
         try:
-            persist_extracted_images(session, uploaded_images=parsing_result.uploaded_images)
-            semantic_dispatches = _dispatch_semantic_tasks_for_uploaded_images(
+            semantic_dispatches = _dispatch_semantic_tasks_for_image_refs(
                 session,
-                uploaded_images=parsing_result.uploaded_images,
+                image_refs=image_refs,
                 request_id=str(task.id),
                 requested_image_model=task.requested_image_model,
                 target_image_model=task.target_image_model,
             )
-        except (ExtractedImagePersistenceError, DocumentParsingSemanticDispatchError, SQLAlchemyError):
+        except (DocumentParsingSemanticDispatchError, SQLAlchemyError):
             logger.exception("Failed to dispatch extracted image semantic tasks for document parsing task, task_id=%s", task_id)
             _mark_task_failed(
                 session,
@@ -478,8 +624,8 @@ def execute_document_parsing_task(task_id: UUID, *, client: FileConvertServiceCl
 
         now = utc_now()
         task.status = DocumentParsingTaskStatus.succeeded
-        task.markdown = parsing_result.markdown
-        task.image_hashes = parsing_result.image_hashes
+        task.markdown = markdown
+        task.image_hashes = image_hashes
         task.semantic_dispatches = semantic_dispatches
         task.error_message = None
         task.finished_at = now
@@ -574,3 +720,4 @@ def is_document_parsing_task_worker_enabled() -> bool:
     """读取文档解析任务 worker 开关。"""
     value = os.getenv("DOCUMENT_PARSING_TASK_WORKER_ENABLED")
     return _to_bool(value, default=True)
+

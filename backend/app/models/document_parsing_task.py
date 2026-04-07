@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, Enum as SAEnum, ForeignKey, Index, Integer, Text, text
+from sqlalchemy import Boolean, Column, DateTime, Enum as SAEnum, ForeignKey, Index, Integer, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlmodel import Field, SQLModel
 
@@ -32,6 +32,8 @@ class DocumentParsingTaskBase(SQLModel):
     requested_image_model: str | None = None
     target_image_model: str | None = None
     image_model_key: str = DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY
+    force_pdf_parse: bool = False
+    pdf_result_source_task_id: UUID | None = None
     status: DocumentParsingTaskStatus = DocumentParsingTaskStatus.pending
     markdown: str | None = None
     image_hashes: dict[str, str] = Field(default_factory=dict)
@@ -88,6 +90,19 @@ class DocumentParsingTask(DocumentParsingTaskBase, table=True):
         default=DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY,
         sa_column=Column(Text, nullable=False, server_default=DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY),
     )
+    force_pdf_parse: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("FALSE")),
+    )
+    pdf_result_source_task_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(
+            PGUUID(as_uuid=True),
+            ForeignKey("document_parsing_tasks.id"),
+            nullable=True,
+            index=True,
+        ),
+    )
     status: DocumentParsingTaskStatus = Field(
         default=DocumentParsingTaskStatus.pending,
         sa_column=Column(SAEnum(DocumentParsingTaskStatus, native_enum=False), nullable=False, index=True),
@@ -114,6 +129,8 @@ class DocumentParsingTaskCreate(SQLModel):
     requested_image_model: str | None = None
     target_image_model: str | None = None
     image_model_key: str = DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY
+    force_pdf_parse: bool = False
+    pdf_result_source_task_id: UUID | None = None
 
 
 class DocumentParsingTaskRead(DocumentParsingTaskBase):
