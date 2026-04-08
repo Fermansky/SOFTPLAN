@@ -73,7 +73,6 @@ def get_llm_availability(client: LlmServiceClient = Depends(get_llm_service_clie
         return LlmAvailabilityRead(
             available=True,
             service="backend",
-            health_path="/internal/llm/health",
         )
 
     logger.warning(

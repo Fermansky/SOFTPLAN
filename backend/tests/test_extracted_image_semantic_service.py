@@ -1,4 +1,4 @@
-import os
+﻿import os
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
@@ -174,7 +174,7 @@ class ExtractedImageSemanticExecutionTests(TestCase):
         self.assertIsNone(result.error_message)
         self.assertEqual(storage.calls, [{"storage_key": "images/hash-a.png", "bucket": "softplan"}])
         self.assertEqual(client.last_call["model"], "request-model")
-        self.assertEqual(client.last_call["prompt"], "请基于这张图片生成一段中文语义描述。")
+        self.assertEqual(client.last_call["prompt"], client.last_call["input_parts"][0].text)
         self.assertEqual(client.last_call["system_prompt"], "system prompt")
         self.assertIsInstance(client.last_call["input_parts"][0], LlmTextInputPart)
         self.assertIsInstance(client.last_call["input_parts"][1], LlmImageUrlInputPart)
@@ -220,7 +220,7 @@ class ExtractedImageSemanticExecutionTests(TestCase):
             )
 
         self.assertFalse(result.succeeded)
-        self.assertIn("llm-service semantic description failed", result.error_message or "")
+        self.assertIn("llm semantic description failed", result.error_message or "")
 
 
 class ExtractedImageSemanticRouteTests(TestCase):
@@ -255,7 +255,7 @@ class ExtractedImageSemanticRouteTests(TestCase):
             request_id="req-9",
             prompt_path="backend/app/prompts/extracted_image_semantic.txt",
             prompt_hash="abc123",
-            description="中文描述" if status == ExtractedImageSemanticTaskStatus.succeeded else None,
+            description="semantic description" if status == ExtractedImageSemanticTaskStatus.succeeded else None,
             error_message="boom" if status == ExtractedImageSemanticTaskStatus.failed else None,
             attempt_count=1,
         )
@@ -338,7 +338,7 @@ class ExtractedImageSemanticRouteTests(TestCase):
             response = extracted_images.get_extracted_image_semantic_result(image_id=1, session=object())
 
         self.assertEqual(response.status, extracted_images.ExtractedImageSemanticResultStatus.succeeded)
-        self.assertEqual(response.description, "中文描述")
+        self.assertEqual(response.description, "semantic description")
         self.assertEqual(response.result_model, "request-model")
 
     def test_route_returns_404_when_image_missing(self):

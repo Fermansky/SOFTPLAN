@@ -98,5 +98,6 @@ def get_file_convert_service_client() -> FileConvertServiceClient:
 
 
 def get_llm_service_client() -> LlmServiceClient:
-    """返回 llm-service 客户端依赖。"""
+    """返回内嵌 LLM 模块客户端依赖。"""
     return get_llm_service_client_service()
+

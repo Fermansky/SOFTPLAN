@@ -68,24 +68,6 @@
       minio:
         condition: service_started
 
-  llm-service:
-    build:
-      context: .
-      dockerfile: llm-service/Dockerfile
-    container_name: softplan-llm-service
-    ports:
-      - "8020:8000"
-    environment:
-      APP_ENV: ${APP_ENV:-development}
-      APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
-      APP_LOG_FORMAT: ${APP_LOG_FORMAT:-auto}
-      APP_LOG_ACCESS_ENABLED: ${APP_LOG_ACCESS_ENABLED:-true}
-      BACKEND_BASE_URL: ${BACKEND_BASE_URL:-http://api:8000}
-      BACKEND_PROXY_TIMEOUT_SECONDS: ${BACKEND_PROXY_TIMEOUT_SECONDS:-30}
-    depends_on:
-      api:
-        condition: service_started
-
   postgres:
     image: postgres:15-alpine
     container_name: softplan-postgres

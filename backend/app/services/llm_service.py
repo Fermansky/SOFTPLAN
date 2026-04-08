@@ -104,7 +104,7 @@ def log_llm_service_config(config: LlmServiceConfig | None = None) -> None:
             "LLM_API_KEY is not configured",
             extra=build_log_extra(
                 "llm.module.config.missing_api_key",
-                detail="/llm/chat and /internal/llm/chat will fail until a non-empty key is provided",
+                detail="/llm/chat requests will fail until a non-empty key is provided",
             ),
         )
 
@@ -421,3 +421,4 @@ def get_llm_service_client() -> LlmServiceClient:
         default_model=config.default_model,
         timeout_seconds=config.timeout_seconds,
     )
+

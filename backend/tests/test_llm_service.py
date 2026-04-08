@@ -175,14 +175,7 @@ class BackendLlmIntegrationTests(TestCase):
         inspector = inspect(self._engine)
         self.assertTrue(inspector.has_table("llm_chat_records"))
 
-    def test_internal_health_returns_ok(self):
-        response = self.client.get("/internal/llm/health", headers={"X-Request-ID": "req-health-1"})
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"status": "ok"})
-        self.assertEqual(response.headers["X-Request-ID"], "req-health-1")
-
-    def test_internal_chat_persists_succeeded_record(self):
+    def test_chat_persists_succeeded_record(self):
         with patch(
             "backend.app.services.llm_service.httpx.post",
             return_value=_ResponseStub(
@@ -196,7 +189,7 @@ class BackendLlmIntegrationTests(TestCase):
             ),
         ):
             response = self.client.post(
-                "/internal/llm/chat",
+                "/llm/chat",
                 json={
                     "prompt": "Say hello",
                     "system_prompt": "You are helpful",
@@ -204,7 +197,7 @@ class BackendLlmIntegrationTests(TestCase):
                     "temperature": 0.2,
                     "max_tokens": 256,
                 },
-                headers={"X-Request-ID": "req-chain-1", "X-Caller-Service": "legacy-worker"},
+                headers={"X-Request-ID": "req-chain-1"},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -219,7 +212,7 @@ class BackendLlmIntegrationTests(TestCase):
         record = records[0]
         self.assertEqual(record.status, LlmChatRecordStatus.succeeded)
         self.assertEqual(record.request_id, "req-user-1")
-        self.assertEqual(record.caller_service, "legacy-worker")
+        self.assertEqual(record.caller_service, "backend")
         self.assertEqual(record.prompt, "Say hello")
         self.assertEqual(record.system_prompt, "You are helpful")
         self.assertEqual(record.resolved_model, "gpt-test")
@@ -230,61 +223,22 @@ class BackendLlmIntegrationTests(TestCase):
         self.assertEqual(record.upstream_response_request_id, "req-header-1")
         self.assertEqual(record.upstream_response_id, "chatcmpl-1")
 
-    def test_internal_chat_redacts_multimodal_snapshot(self):
-        image_url = "data:image/png;base64,AAAA"
-        with patch(
-            "backend.app.services.llm_service.httpx.post",
-            return_value=_ResponseStub(
-                {
-                    "id": "chatcmpl-2",
-                    "model": "gpt-test",
-                    "choices": [{"message": {"content": "image summary"}}],
-                    "usage": {"prompt_tokens": 11, "completion_tokens": 21, "total_tokens": 32},
-                }
-            ),
-        ):
-            response = self.client.post(
-                "/internal/llm/chat",
-                json={
-                    "prompt": "Describe the image",
-                    "request_id": "req-user-2",
-                    "input_parts": [
-                        {"type": "text", "text": "Describe the image"},
-                        {"type": "image_url", "image_url": {"url": image_url}},
-                    ],
-                },
-            )
-
-        self.assertEqual(response.status_code, 200)
-        records = self._load_records()
-        self.assertEqual(len(records), 1)
-        record = records[0]
-        self.assertEqual(record.input_part_count, 2)
-        self.assertEqual(record.image_part_count, 1)
-        self.assertEqual(record.input_parts_snapshot[0], {"type": "text", "text": "Describe the image"})
-        self.assertEqual(record.input_parts_snapshot[1]["type"], "image_url")
-        self.assertEqual(record.input_parts_snapshot[1]["url_kind"], "data_url")
-        self.assertEqual(record.input_parts_snapshot[1]["content_type"], "image/png")
-        self.assertIn("url_sha256", record.input_parts_snapshot[1])
-        self.assertNotIn("url", record.input_parts_snapshot[1])
-        self.assertNotIn("AAAA", str(record.input_parts_snapshot[1]))
-
-    def test_internal_chat_returns_502_and_persists_failed_record_on_timeout(self):
+    def test_chat_returns_502_and_persists_failed_record_on_timeout(self):
         with patch(
             "backend.app.services.llm_service.httpx.post",
             side_effect=httpx.TimeoutException("timed out"),
         ):
-            response = self.client.post("/internal/llm/chat", json={"prompt": "hello", "request_id": "req-timeout-1"})
+            response = self.client.post("/llm/chat", json={"prompt": "hello", "request_id": "req-timeout-1"})
 
         self.assertEqual(response.status_code, 502)
-        self.assertIn("Upstream LLM request failed", response.json()["detail"])
+        self.assertIn("llm chat failed: Upstream timeout", response.json()["detail"])
         records = self._load_records()
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].status, LlmChatRecordStatus.failed)
         self.assertEqual(records[0].request_id, "req-timeout-1")
         self.assertIn("Upstream timeout", records[0].error_message or "")
 
-    def test_internal_chat_returns_500_when_persistence_fails(self):
+    def test_chat_returns_500_when_persistence_fails(self):
         with patch(
             "backend.app.services.llm_service.httpx.post",
             return_value=_ResponseStub(
@@ -300,7 +254,7 @@ class BackendLlmIntegrationTests(TestCase):
                 "backend.app.services.llm_service.persist_llm_chat_record",
                 side_effect=LlmChatPersistenceError("chat persistence failed"),
             ):
-                response = self.client.post("/internal/llm/chat", json={"prompt": "hello"})
+                response = self.client.post("/llm/chat", json={"prompt": "hello"})
 
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json()["detail"], "chat persistence failed")
@@ -313,7 +267,7 @@ class BackendLlmRouterTests(TestCase):
 
         self.assertTrue(response.available)
         self.assertEqual(response.service, "backend")
-        self.assertEqual(response.health_path, "/internal/llm/health")
+        self.assertIsNone(response.health_path)
         self.assertIsNone(response.error)
 
     def test_get_llm_availability_returns_available_false(self):
@@ -321,6 +275,7 @@ class BackendLlmRouterTests(TestCase):
 
         self.assertFalse(response.available)
         self.assertEqual(response.service, "backend")
+        self.assertIsNone(response.health_path)
         self.assertEqual(response.error, "missing key")
 
     def test_chat_returns_result(self):
@@ -385,6 +340,7 @@ class BackendLlmRouterTests(TestCase):
             )
 
         self.assertEqual(ctx.exception.status_code, 502)
+        self.assertEqual(ctx.exception.detail, "llm chat failed: request failed")
 
     def test_chat_returns_502_on_extracted_image_download_failure(self):
         extracted_image = SimpleNamespace(
