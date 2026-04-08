@@ -1,9 +1,21 @@
 ﻿from __future__ import annotations
 
+"""LLM 聊天审计持久化服务。
+
+职责：
+1. 将文本、多模态输入片段转换为适合审计落库的快照结构。
+2. 统一写入 llm_chat_records，补齐配置、模型、耗时与上游请求标识。
+3. 在持久化失败时抛出专用异常，交由上层决定如何反馈。
+
+说明：
+- 图片输入不会保存原始 URL，而是记录类型、内容类型与哈希，降低审计数据敏感度。
+- 本模块不负责调用 LLM，只负责把一次调用结果稳定地写入数据库。
+"""
 import hashlib
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
+from uuid import UUID
 from urllib.parse import urlparse
 
 from sqlmodel import Session
@@ -17,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class LlmChatPersistenceError(RuntimeError):
-    """Raised when llm chat audit persistence fails."""
+    """LLM 聊天审计记录写入失败。"""
 
 
 def _infer_url_kind(url: str) -> str:
@@ -74,6 +86,8 @@ def persist_llm_chat_record(
     prompt: str,
     system_prompt: str | None,
     input_parts: list["LlmInputPart"] | None,
+    llm_config_id: UUID | None,
+    llm_config_code: str | None,
     requested_model: str | None,
     temperature: float | None,
     max_tokens: int | None,
@@ -94,6 +108,8 @@ def persist_llm_chat_record(
         input_parts_snapshot=snapshots,
         input_part_count=len(snapshots),
         image_part_count=image_part_count,
+        llm_config_id=llm_config_id,
+        llm_config_code=llm_config_code,
         requested_model=requested_model,
         resolved_model=result.model if result is not None else None,
         temperature=temperature,
@@ -118,4 +134,9 @@ def persist_llm_chat_record(
         raise LlmChatPersistenceError("chat persistence failed") from exc
     session.refresh(record)
     return record
+
+
+
+
+
 

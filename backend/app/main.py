@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import os
 
 from fastapi import FastAPI
@@ -9,6 +9,7 @@ from .core.logging import build_log_extra, configure_logging, install_request_id
 from .database import create_db_and_tables
 from .services import (
     ExtractedImageSemanticPromptError,
+    bootstrap_llm_configs_from_env,
     get_extracted_image_semantic_task_worker,
     get_layout_analysis_task_worker,
     is_extracted_image_semantic_task_worker_enabled,
@@ -46,6 +47,7 @@ def create_app() -> FastAPI:
     )
 
     app.add_event_handler("startup", create_db_and_tables)
+    app.add_event_handler("startup", bootstrap_llm_configs_from_env)
     app.add_event_handler("startup", _log_extracted_image_semantic_prompt_status)
     app.add_event_handler("startup", log_llm_service_config)
 
@@ -78,3 +80,4 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+

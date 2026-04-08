@@ -1,12 +1,22 @@
-﻿"""Embedded LLM module hosted inside backend."""
+﻿"""内嵌 LLM 调用服务。
+
+职责：
+1. 根据请求上下文解析当前生效的 LLM 配置，并构造 OpenAI-compatible 客户端。
+2. 统一封装聊天请求、响应校验、错误映射与日志打点。
+3. 在调用结束后写入聊天审计记录，补齐配置快照、耗时与 token 统计。
+
+说明：
+- 本模块负责“一次调用”的协议适配与审计落库，不负责配置 CRUD。
+- 当调用方显式传入 `config_id` 时优先使用指定配置，否则回退到当前激活配置。
+- 上游调用失败统一转为 `LlmServiceExecutionError`，由路由层或任务层决定如何继续映射。
+"""
 
 import logging
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import lru_cache
 from time import perf_counter
 from typing import Any
+from uuid import UUID
 
 import httpx
 from sqlmodel import Session
@@ -15,6 +25,7 @@ from ..core.logging import REQUEST_ID_HEADER, build_log_extra, get_request_id
 from ..database import engine
 from ..models import LlmChatRecordStatus
 from .llm_chat_persistence import persist_llm_chat_record
+from .llm_config_service import resolve_llm_config
 
 logger = logging.getLogger(__name__)
 _MAX_LOG_BODY_LENGTH = 500
@@ -53,6 +64,8 @@ LlmInputPart = LlmTextInputPart | LlmImageUrlInputPart
 
 @dataclass(frozen=True)
 class LlmServiceConfig:
+    config_id: UUID | None
+    config_code: str | None
     base_url: str
     api_key: str
     default_model: str
@@ -60,15 +73,20 @@ class LlmServiceConfig:
 
 
 class LlmServiceExecutionError(RuntimeError):
-    """Raised when the upstream LLM request fails or returns an invalid payload."""
+    """上游 LLM 请求失败或返回非法载荷时抛出。"""
+
+
+
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+
 def _build_duration_ms(started_at: float) -> int:
     return max(0, round((perf_counter() - started_at) * 1000))
+
 
 
 def _truncate_for_log(value: str, *, limit: int = _MAX_LOG_BODY_LENGTH) -> str:
@@ -77,22 +95,42 @@ def _truncate_for_log(value: str, *, limit: int = _MAX_LOG_BODY_LENGTH) -> str:
     return f"{value[:limit]}...(truncated)"
 
 
-def load_llm_service_config() -> LlmServiceConfig:
+
+def load_llm_service_config(session: Session | None = None, *, config_id: UUID | None = None) -> LlmServiceConfig:
+    if session is None:
+        with Session(engine) as managed_session:
+            return load_llm_service_config(managed_session, config_id=config_id)
+
+    llm_config = resolve_llm_config(session, config_id=config_id)
+
     return LlmServiceConfig(
-        base_url=os.getenv("LLM_API_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
-        api_key=os.getenv("LLM_API_KEY", ""),
-        default_model=os.getenv("LLM_DEFAULT_MODEL", "gpt-4o-mini"),
-        timeout_seconds=float(os.getenv("LLM_TIMEOUT_SECONDS", "30")),
+        config_id=llm_config.id,
+        config_code=llm_config.code,
+        base_url=llm_config.base_url.rstrip("/"),
+        api_key=llm_config.api_key,
+        default_model=llm_config.default_model,
+        timeout_seconds=llm_config.timeout_seconds,
     )
 
 
+
 def log_llm_service_config(config: LlmServiceConfig | None = None) -> None:
-    resolved_config = config or load_llm_service_config()
+    try:
+        resolved_config = config or load_llm_service_config()
+    except RuntimeError as exc:
+        logger.warning(
+            "Active llm configuration is unavailable",
+            extra=build_log_extra("llm.module.config.unavailable", error=str(exc)),
+        )
+        return
+
     api_key_present = bool(resolved_config.api_key.strip())
     logger.info(
         "Embedded LLM configuration loaded",
         extra=build_log_extra(
             "llm.module.config.loaded",
+            config_id=str(resolved_config.config_id) if resolved_config.config_id is not None else None,
+            config_code=resolved_config.config_code,
             base_url=resolved_config.base_url,
             default_model=resolved_config.default_model,
             timeout_seconds=resolved_config.timeout_seconds,
@@ -101,25 +139,31 @@ def log_llm_service_config(config: LlmServiceConfig | None = None) -> None:
     )
     if not api_key_present:
         logger.warning(
-            "LLM_API_KEY is not configured",
+            "LLM api key is not configured",
             extra=build_log_extra(
                 "llm.module.config.missing_api_key",
+                config_id=str(resolved_config.config_id) if resolved_config.config_id is not None else None,
+                config_code=resolved_config.config_code,
                 detail="/llm/chat requests will fail until a non-empty key is provided",
             ),
         )
 
 
 class LlmServiceClient:
-    """Backend-local LLM client with audit persistence."""
+    """面向 backend 内部调用方的 LLM 客户端。"""
 
     def __init__(
         self,
         *,
+        config_id: UUID | None,
+        config_code: str | None,
         base_url: str,
         api_key: str,
         default_model: str,
         timeout_seconds: float = 30.0,
     ) -> None:
+        self.config_id = config_id
+        self.config_code = config_code
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.default_model = default_model
@@ -182,12 +226,14 @@ class LlmServiceClient:
                 extra=build_log_extra(
                     "llm.module.request.aborted",
                     request_id=resolved_request_id,
+                    config_id=str(self.config_id) if self.config_id is not None else None,
+                    config_code=self.config_code,
                     base_url=self.base_url,
                     target_model=target_model,
-                    reason="LLM_API_KEY is not configured",
+                    reason="LLM api key is not configured",
                 ),
             )
-            raise LlmServiceExecutionError("LLM_API_KEY is not configured")
+            raise LlmServiceExecutionError("LLM api key is not configured")
 
         messages: list[dict[str, Any]] = []
         if system_prompt is not None and system_prompt.strip():
@@ -231,6 +277,8 @@ class LlmServiceClient:
                 extra=build_log_extra(
                     "llm.module.timeout",
                     request_id=resolved_request_id,
+                    config_id=str(self.config_id) if self.config_id is not None else None,
+                    config_code=self.config_code,
                     base_url=self.base_url,
                     target_model=target_model,
                     error=str(exc),
@@ -245,6 +293,8 @@ class LlmServiceClient:
                 extra=build_log_extra(
                     "llm.module.http_error",
                     request_id=resolved_request_id,
+                    config_id=str(self.config_id) if self.config_id is not None else None,
+                    config_code=self.config_code,
                     base_url=self.base_url,
                     target_model=target_model,
                     status_code=status_code,
@@ -260,6 +310,8 @@ class LlmServiceClient:
                 extra=build_log_extra(
                     "llm.module.request_error",
                     request_id=resolved_request_id,
+                    config_id=str(self.config_id) if self.config_id is not None else None,
+                    config_code=self.config_code,
                     base_url=self.base_url,
                     target_model=target_model,
                     error_type=type(exc).__name__,
@@ -273,6 +325,8 @@ class LlmServiceClient:
                 extra=build_log_extra(
                     "llm.module.json_decode_error",
                     request_id=resolved_request_id,
+                    config_id=str(self.config_id) if self.config_id is not None else None,
+                    config_code=self.config_code,
                     base_url=self.base_url,
                     target_model=target_model,
                     error=str(exc),
@@ -286,6 +340,8 @@ class LlmServiceClient:
                 extra=build_log_extra(
                     "llm.module.unexpected_payload",
                     request_id=resolved_request_id,
+                    config_id=str(self.config_id) if self.config_id is not None else None,
+                    config_code=self.config_code,
                     base_url=self.base_url,
                     target_model=target_model,
                     payload_type=type(payload).__name__,
@@ -301,6 +357,8 @@ class LlmServiceClient:
                 extra=build_log_extra(
                     "llm.module.payload_validation_failed",
                     request_id=resolved_request_id,
+                    config_id=str(self.config_id) if self.config_id is not None else None,
+                    config_code=self.config_code,
                     base_url=self.base_url,
                     target_model=target_model,
                     payload_excerpt=_truncate_for_log(repr(payload)),
@@ -339,9 +397,9 @@ class LlmServiceClient:
 
     def check_availability(self) -> tuple[bool, str | None]:
         if not self.base_url:
-            return False, "LLM_API_BASE_URL is not configured"
+            return False, "LLM api base url is not configured"
         if not self.api_key.strip():
-            return False, "LLM_API_KEY is not configured"
+            return False, "LLM api key is not configured"
         return True, None
 
     def chat(
@@ -380,6 +438,8 @@ class LlmServiceClient:
                     prompt=prompt,
                     system_prompt=system_prompt,
                     input_parts=input_parts,
+                    llm_config_id=self.config_id,
+                    llm_config_code=self.config_code,
                     requested_model=model,
                     temperature=temperature,
                     max_tokens=max_tokens,
@@ -401,6 +461,8 @@ class LlmServiceClient:
                 prompt=prompt,
                 system_prompt=system_prompt,
                 input_parts=input_parts,
+                llm_config_id=self.config_id,
+                llm_config_code=self.config_code,
                 requested_model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -412,13 +474,17 @@ class LlmServiceClient:
         return result, None
 
 
-@lru_cache(maxsize=1)
-def get_llm_service_client() -> LlmServiceClient:
-    config = load_llm_service_config()
+
+def get_llm_service_client(*, config_id: UUID | None = None, session: Session | None = None) -> LlmServiceClient:
+    config = load_llm_service_config(session=session, config_id=config_id)
     return LlmServiceClient(
+        config_id=config.config_id,
+        config_code=config.config_code,
         base_url=config.base_url,
         api_key=config.api_key,
         default_model=config.default_model,
         timeout_seconds=config.timeout_seconds,
     )
+
+
 

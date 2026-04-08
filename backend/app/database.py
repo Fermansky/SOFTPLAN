@@ -1,4 +1,4 @@
-﻿import os
+import os
 from collections.abc import Generator
 
 from sqlalchemy import inspect
@@ -243,6 +243,38 @@ def _ensure_document_parsing_image_item_columns() -> None:
 
 
 
+def _ensure_llm_chat_record_columns() -> None:
+    if engine.dialect.name != "postgresql":
+        return
+
+    _execute_statements(
+        [
+            "ALTER TABLE llm_chat_records ADD COLUMN IF NOT EXISTS llm_config_id UUID",
+            "ALTER TABLE llm_chat_records ADD COLUMN IF NOT EXISTS llm_config_code TEXT",
+            "CREATE INDEX IF NOT EXISTS ix_llm_chat_records_llm_config_id ON llm_chat_records (llm_config_id)",
+            "CREATE INDEX IF NOT EXISTS ix_llm_chat_records_llm_config_code ON llm_chat_records (llm_config_code)",
+        ]
+    )
+
+
+
+def _ensure_llm_config_indexes() -> None:
+    if engine.dialect.name != "postgresql":
+        return
+
+    _execute_statements(
+        [
+            "DROP INDEX IF EXISTS ux_llm_configs_single_active",
+            (
+                "CREATE UNIQUE INDEX ux_llm_configs_single_active "
+                "ON llm_configs ((is_active)) "
+                "WHERE deleted_at IS NULL AND is_active IS TRUE"
+            ),
+        ]
+    )
+
+
+
 def create_db_and_tables() -> None:
     _migrate_legacy_document_parsing_table()
     SQLModel.metadata.create_all(engine)
@@ -252,11 +284,14 @@ def create_db_and_tables() -> None:
     _ensure_extracted_image_semantic_snapshot_columns()
     _ensure_document_parsing_task_columns()
     _ensure_document_parsing_image_item_columns()
+    _ensure_llm_chat_record_columns()
+    _ensure_llm_config_indexes()
 
 
 
 def get_session() -> Generator[Session, None, None]:
     with Session(engine) as session:
         yield session
+
 
 

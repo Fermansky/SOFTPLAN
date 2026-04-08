@@ -1,5 +1,6 @@
-﻿from datetime import datetime
+from datetime import datetime
 from enum import Enum
+from uuid import UUID
 
 from sqlalchemy import JSON, Column, DateTime, Integer, Text
 from sqlmodel import Field, SQLModel
@@ -27,6 +28,8 @@ class LlmChatRecord(SQLModel, table=True):
     )
     input_part_count: int = Field(default=0, sa_column=Column(Integer, nullable=False, default=0))
     image_part_count: int = Field(default=0, sa_column=Column(Integer, nullable=False, default=0))
+    llm_config_id: UUID | None = Field(default=None, nullable=True, index=True)
+    llm_config_code: str | None = Field(default=None, sa_column=Column(Text, nullable=True, index=True))
     requested_model: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     resolved_model: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     temperature: float | None = Field(default=None)
@@ -42,3 +45,4 @@ class LlmChatRecord(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False))
     completed_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False))
     duration_ms: int = Field(default=0, sa_column=Column(Integer, nullable=False, default=0))
+

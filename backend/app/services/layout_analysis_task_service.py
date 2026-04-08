@@ -1,4 +1,16 @@
-﻿import asyncio
+﻿"""版面分析任务服务。
+
+职责：
+1. 解析 layout analysis 的模型选择规则，并负责任务创建/复用。
+2. 驱动任务状态在 pending、running、succeeded、failed 之间流转。
+3. 协调 file-convert-service 解析结果、提取图片落库与文档解析任务同步。
+
+说明：
+- 当前仅支持 `marker` 作为版面分析模型，所有请求都会被收敛到该目标模型。
+- 本模块既包含同步的任务执行逻辑，也包含后台 worker 的轮询编排逻辑。
+- 对 file-convert-service 的实际 HTTP 适配由独立客户端负责，这里只关注任务编排。
+"""
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -399,3 +411,6 @@ def is_layout_analysis_task_worker_enabled() -> bool:
     if value is None:
         value = os.getenv("DOCUMENT_PARSING_TASK_WORKER_ENABLED")
     return _to_bool(value, default=True)
+
+
+

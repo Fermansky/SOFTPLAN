@@ -1,33 +1,39 @@
-﻿"""LLM 代理路由。
-
-职责：
-1. 暴露 backend 对外的 LLM availability 与 chat 接口。
-2. 在聊天场景下复用已落库的 ExtractedImage 作为图片输入。
-3. 将存储层与内嵌 LLM 模块错误映射为合适的 HTTP 状态码。
-
-说明：
-- 本模块负责 API 编排和错误映射，不直接调用上游 OpenAI-compatible 接口。
-- 图片附件只接受系统内已存在的 `ExtractedImage.id`。
-"""
+"""LLM API routes and configuration management."""
 
 import base64
 import logging
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from minio.error import S3Error
 from pydantic import BaseModel, Field
 from sqlmodel import Session
 
 from ...core.logging import build_log_extra, get_request_id
 from ...database import get_session
+from ...models import LlmConfigCreate, LlmConfigListItem, LlmConfigRead, LlmConfigUpdate
 from ...services import (
     LlmChatPersistenceError,
+    LlmConfigConflictError,
+    LlmConfigDisabledError,
+    LlmConfigNotFoundError,
+    LlmConfigResolutionError,
+    LlmConfigValidationError,
     LlmImageUrlInputPart,
-    LlmServiceClient,
     LlmTextInputPart,
     MinioStorage,
+    activate_llm_config,
+    create_llm_config,
+    delete_llm_config,
+    get_active_llm_config,
+    get_llm_config_or_raise,
+    get_llm_service_client,
+    list_llm_configs,
+    serialize_llm_config,
+    serialize_llm_config_list_item,
+    update_llm_config,
 )
-from ..dependencies import get_extracted_image_or_404, get_llm_service_client, get_minio_storage
+from ..dependencies import get_extracted_image_or_404, get_minio_storage
 
 router = APIRouter(prefix="/llm", tags=["llm"])
 logger = logging.getLogger(__name__)
@@ -47,6 +53,7 @@ class LlmChatRequest(BaseModel):
     prompt: str = Field(min_length=1)
     system_prompt: str | None = None
     model: str | None = None
+    config_id: UUID | None = None
     temperature: float | None = None
     max_tokens: int | None = None
     request_id: str | None = None
@@ -66,8 +73,95 @@ class LlmChatRead(BaseModel):
     request_id: str | None = None
 
 
+
+def _raise_llm_config_http_error(exc: Exception) -> None:
+    if isinstance(exc, LlmConfigNotFoundError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    if isinstance(exc, LlmConfigDisabledError):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if isinstance(exc, LlmConfigConflictError):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if isinstance(exc, LlmConfigResolutionError):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    if isinstance(exc, LlmConfigValidationError):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    raise exc
+
+
+@router.get("/configs/active", response_model=LlmConfigRead)
+def get_active_llm_config_route(session: Session = Depends(get_session)) -> LlmConfigRead:
+    config = get_active_llm_config(session)
+    if config is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="No active LLM config is configured")
+    if not config.enabled:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="LLM config is disabled")
+    return serialize_llm_config(config)
+
+
+@router.get("/configs", response_model=list[LlmConfigListItem])
+def list_llm_configs_route(session: Session = Depends(get_session)) -> list[LlmConfigListItem]:
+    return [serialize_llm_config_list_item(config) for config in list_llm_configs(session)]
+
+
+@router.post("/configs", response_model=LlmConfigRead, status_code=status.HTTP_201_CREATED)
+def create_llm_config_route(payload: LlmConfigCreate, session: Session = Depends(get_session)) -> LlmConfigRead:
+    try:
+        config = create_llm_config(session, payload)
+    except Exception as exc:
+        _raise_llm_config_http_error(exc)
+    return serialize_llm_config(config)
+
+
+@router.get("/configs/{config_id}", response_model=LlmConfigRead)
+def get_llm_config_route(config_id: UUID, session: Session = Depends(get_session)) -> LlmConfigRead:
+    try:
+        config = get_llm_config_or_raise(session, config_id)
+    except Exception as exc:
+        _raise_llm_config_http_error(exc)
+    return serialize_llm_config(config)
+
+
+@router.patch("/configs/{config_id}", response_model=LlmConfigRead)
+def update_llm_config_route(
+    config_id: UUID,
+    payload: LlmConfigUpdate,
+    session: Session = Depends(get_session),
+) -> LlmConfigRead:
+    try:
+        config = update_llm_config(session, config_id, payload)
+    except Exception as exc:
+        _raise_llm_config_http_error(exc)
+    return serialize_llm_config(config)
+
+
+@router.post("/configs/{config_id}/activate", response_model=LlmConfigRead)
+def activate_llm_config_route(config_id: UUID, session: Session = Depends(get_session)) -> LlmConfigRead:
+    try:
+        config = activate_llm_config(session, config_id)
+    except Exception as exc:
+        _raise_llm_config_http_error(exc)
+    return serialize_llm_config(config)
+
+
+@router.delete("/configs/{config_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_llm_config_route(config_id: UUID, session: Session = Depends(get_session)) -> Response:
+    try:
+        delete_llm_config(session, config_id)
+    except Exception as exc:
+        _raise_llm_config_http_error(exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/availability", response_model=LlmAvailabilityRead)
-def get_llm_availability(client: LlmServiceClient = Depends(get_llm_service_client)) -> LlmAvailabilityRead:
+def get_llm_availability(
+    config_id: UUID | None = Query(default=None),
+    session: Session = Depends(get_session),
+) -> LlmAvailabilityRead:
+    try:
+        client = get_llm_service_client(config_id=config_id, session=session)
+    except Exception as exc:
+        _raise_llm_config_http_error(exc)
+
     available, error = client.check_availability()
     if available:
         return LlmAvailabilityRead(
@@ -77,7 +171,12 @@ def get_llm_availability(client: LlmServiceClient = Depends(get_llm_service_clie
 
     logger.warning(
         "Embedded LLM module is unavailable",
-        extra=build_log_extra("llm.availability.unavailable", error=error),
+        extra=build_log_extra(
+            "llm.availability.unavailable",
+            config_id=str(config_id) if config_id is not None else str(client.config_id) if client.config_id is not None else None,
+            config_code=client.config_code,
+            error=error,
+        ),
     )
     return LlmAvailabilityRead(
         available=False,
@@ -86,9 +185,11 @@ def get_llm_availability(client: LlmServiceClient = Depends(get_llm_service_clie
     )
 
 
+
 def _to_data_url(payload: bytes, *, content_type: str) -> str:
     encoded = base64.b64encode(payload).decode("ascii")
     return f"data:{content_type};base64,{encoded}"
+
 
 
 def _build_extracted_image_input_parts(
@@ -147,13 +248,17 @@ def _build_extracted_image_input_parts(
 @router.post("/chat", response_model=LlmChatRead)
 def chat(
     payload: LlmChatRequest,
-    client: LlmServiceClient = Depends(get_llm_service_client),
     session: Session = Depends(get_session),
     storage: MinioStorage = Depends(get_minio_storage),
 ) -> LlmChatRead:
     prompt = payload.prompt.strip()
     if not prompt:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="prompt is required")
+
+    try:
+        client = get_llm_service_client(config_id=payload.config_id, session=session)
+    except Exception as exc:
+        _raise_llm_config_http_error(exc)
 
     resolved_request_id = payload.request_id or get_request_id()
     extracted_image_ids = payload.extracted_image_ids or []
@@ -171,6 +276,8 @@ def chat(
         extra=build_log_extra(
             "llm.chat.started",
             request_id=resolved_request_id,
+            config_id=str(client.config_id) if client.config_id is not None else None,
+            config_code=client.config_code,
             prompt_length=len(prompt),
             extracted_image_count=len(extracted_image_ids),
             has_custom_model=bool(payload.model),
@@ -193,6 +300,8 @@ def chat(
             extra=build_log_extra(
                 "llm.chat.persistence_failed",
                 request_id=resolved_request_id,
+                config_id=str(client.config_id) if client.config_id is not None else None,
+                config_code=client.config_code,
                 extracted_image_count=len(extracted_image_ids),
                 error=str(exc),
             ),
@@ -205,6 +314,8 @@ def chat(
             extra=build_log_extra(
                 "llm.chat.failed",
                 request_id=resolved_request_id,
+                config_id=str(client.config_id) if client.config_id is not None else None,
+                config_code=client.config_code,
                 extracted_image_count=len(extracted_image_ids),
                 error=error,
             ),
@@ -219,6 +330,8 @@ def chat(
         extra=build_log_extra(
             "llm.chat.succeeded",
             request_id=result.request_id,
+            config_id=str(client.config_id) if client.config_id is not None else None,
+            config_code=client.config_code,
             response_model=result.model,
             total_tokens=result.usage.total_tokens,
             extracted_image_count=len(extracted_image_ids),

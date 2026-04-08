@@ -1,4 +1,4 @@
-﻿from .document import Document, DocumentCreate, DocumentRead, DocumentUpdate
+from .document import Document, DocumentCreate, DocumentRead, DocumentUpdate
 from .document_parsing_image_item import (
     DocumentParsingImageItem,
     DocumentParsingImageItemRead,
@@ -31,6 +31,7 @@ from .layout_analysis_task import (
     LayoutAnalysisTaskRead,
     LayoutAnalysisTaskStatus,
 )
+from .llm_config import LlmConfig, LlmConfigCreate, LlmConfigListItem, LlmConfigProvider, LlmConfigRead, LlmConfigUpdate
 from .llm_chat_record import LlmChatRecord, LlmChatRecordStatus
 from .project import Project, ProjectCreate, ProjectRead, ProjectStatus, ProjectUpdate
 from .project_software_relation import (
@@ -73,6 +74,12 @@ __all__ = [
     "LayoutAnalysisTaskCreate",
     "LayoutAnalysisTaskRead",
     "LayoutAnalysisTaskStatus",
+    "LlmConfig",
+    "LlmConfigCreate",
+    "LlmConfigListItem",
+    "LlmConfigProvider",
+    "LlmConfigRead",
+    "LlmConfigUpdate",
     "LlmChatRecord",
     "LlmChatRecordStatus",
     "Project",
@@ -89,3 +96,4 @@ __all__ = [
     "SoftwareRead",
     "SoftwareUpdate",
 ]
+
