@@ -31,6 +31,7 @@ from .layout_analysis_task import (
     LayoutAnalysisTaskRead,
     LayoutAnalysisTaskStatus,
 )
+from .llm_chat_record import LlmChatRecord, LlmChatRecordStatus
 from .project import Project, ProjectCreate, ProjectRead, ProjectStatus, ProjectUpdate
 from .project_software_relation import (
     ProjectSoftwareRelation,
@@ -72,6 +73,8 @@ __all__ = [
     "LayoutAnalysisTaskCreate",
     "LayoutAnalysisTaskRead",
     "LayoutAnalysisTaskStatus",
+    "LlmChatRecord",
+    "LlmChatRecordStatus",
     "Project",
     "ProjectCreate",
     "ProjectRead",

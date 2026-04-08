@@ -59,13 +59,17 @@ from .layout_analysis_task_service import (
     recover_orphaned_layout_analysis_tasks,
     resolve_layout_analysis_model_selection,
 )
+from .llm_chat_persistence import LlmChatPersistenceError, persist_llm_chat_record, snapshot_input_parts
 from .llm_service import (
     LlmChatResult,
     LlmImageUrlInputPart,
+    LlmInputPart,
     LlmServiceClient,
     LlmTextInputPart,
     LlmUsage,
     get_llm_service_client,
+    load_llm_service_config,
+    log_llm_service_config,
 )
 from .minio_storage import MinioStorage, StoredObjectRef, get_minio_storage
 
@@ -77,8 +81,10 @@ __all__ = [
     "ExtractedImageSemanticTaskSubmissionResult",
     "FileConvertServiceClient",
     "LayoutAnalysisTaskSubmissionResult",
+    "LlmChatPersistenceError",
     "LlmChatResult",
     "LlmImageUrlInputPart",
+    "LlmInputPart",
     "LlmServiceClient",
     "LlmTextInputPart",
     "LlmUsage",
@@ -119,6 +125,9 @@ __all__ = [
     "is_extracted_image_semantic_task_worker_enabled",
     "is_layout_analysis_task_worker_enabled",
     "load_extracted_image_semantic_prompt",
+    "load_llm_service_config",
+    "log_llm_service_config",
+    "persist_llm_chat_record",
     "process_document_parsing_tasks_for_layout_task",
     "process_document_parsing_tasks_for_semantic_task",
     "process_one_pending_extracted_image_semantic_task",
@@ -129,6 +138,7 @@ __all__ = [
     "resolve_extracted_image_semantic_model",
     "resolve_extracted_image_semantic_prompt_path",
     "resolve_layout_analysis_model_selection",
+    "snapshot_input_parts",
     "synchronize_document_parsing_task",
     "upload_document_with_dedupe",
 ]

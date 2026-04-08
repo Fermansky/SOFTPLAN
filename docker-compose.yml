@@ -1,4 +1,4 @@
-services:
+﻿services:
   web:
     build:
       context: ./frontend
@@ -28,7 +28,10 @@ services:
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-softplan}
       FILE_CONVERT_SERVICE_BASE_URL: http://file-convert-service:8000
-      LLM_SERVICE_BASE_URL: http://llm-service:8000
+      LLM_API_BASE_URL: ${LLM_API_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-gpt-4o-mini}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-30}
       DOCUMENT_PARSING_TASK_WORKER_ENABLED: ${DOCUMENT_PARSING_TASK_WORKER_ENABLED:-true}
       DOCUMENT_PARSING_TASK_WORKER_POLL_INTERVAL_SECONDS: ${DOCUMENT_PARSING_TASK_WORKER_POLL_INTERVAL_SECONDS:-1.0}
     depends_on:
@@ -37,8 +40,6 @@ services:
       minio:
         condition: service_started
       file-convert-service:
-        condition: service_started
-      llm-service:
         condition: service_started
 
   file-convert-service:
@@ -79,10 +80,11 @@ services:
       APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
       APP_LOG_FORMAT: ${APP_LOG_FORMAT:-auto}
       APP_LOG_ACCESS_ENABLED: ${APP_LOG_ACCESS_ENABLED:-true}
-      LLM_API_BASE_URL: ${LLM_API_BASE_URL:-https://api.openai.com/v1}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-gpt-4o-mini}
-      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-30}
+      BACKEND_BASE_URL: ${BACKEND_BASE_URL:-http://api:8000}
+      BACKEND_PROXY_TIMEOUT_SECONDS: ${BACKEND_PROXY_TIMEOUT_SECONDS:-30}
+    depends_on:
+      api:
+        condition: service_started
 
   postgres:
     image: postgres:15-alpine

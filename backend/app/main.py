@@ -14,6 +14,7 @@ from .services import (
     is_extracted_image_semantic_task_worker_enabled,
     is_layout_analysis_task_worker_enabled,
     load_extracted_image_semantic_prompt,
+    log_llm_service_config,
 )
 
 
@@ -46,6 +47,7 @@ def create_app() -> FastAPI:
 
     app.add_event_handler("startup", create_db_and_tables)
     app.add_event_handler("startup", _log_extracted_image_semantic_prompt_status)
+    app.add_event_handler("startup", log_llm_service_config)
 
     if is_layout_analysis_task_worker_enabled():
         layout_analysis_worker = get_layout_analysis_task_worker()

@@ -4,6 +4,7 @@ from collections.abc import Generator
 from sqlalchemy import inspect
 from sqlmodel import SQLModel, Session, create_engine
 
+from . import models as _models  # noqa: F401
 from .models.document_parsing_task import DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY
 from .models.layout_analysis_task import DEFAULT_LAYOUT_ANALYSIS_MODEL
 
@@ -257,3 +258,5 @@ def create_db_and_tables() -> None:
 def get_session() -> Generator[Session, None, None]:
     with Session(engine) as session:
         yield session
+
+

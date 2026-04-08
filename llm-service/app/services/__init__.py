@@ -1,20 +1,19 @@
 ﻿from .llm_client import (
-    LlmChatResult,
-    LlmImageUrlInputPart,
-    LlmTextInputPart,
-    LlmUsage,
-    OpenAICompatibleLlmClient,
-    OpenAICompatibleLlmClientError,
-    get_openai_compatible_llm_client,
+    BackendProxyClient,
+    BackendProxyConfig,
+    BackendProxyError,
+    CALLER_SERVICE_HEADER,
+    get_backend_proxy_client,
+    load_backend_proxy_config,
+    log_backend_proxy_config,
 )
 
 __all__ = [
-    "LlmChatResult",
-    "LlmImageUrlInputPart",
-    "LlmTextInputPart",
-    "LlmUsage",
-    "OpenAICompatibleLlmClient",
-    "OpenAICompatibleLlmClientError",
-    "get_openai_compatible_llm_client",
+    "BackendProxyClient",
+    "BackendProxyConfig",
+    "BackendProxyError",
+    "CALLER_SERVICE_HEADER",
+    "get_backend_proxy_client",
+    "load_backend_proxy_config",
+    "log_backend_proxy_config",
 ]
-

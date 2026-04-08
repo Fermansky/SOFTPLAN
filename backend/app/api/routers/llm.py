@@ -3,7 +3,7 @@
 职责：
 1. 暴露 backend 对外的 LLM availability 与 chat 接口。
 2. 在聊天场景下复用已落库的 ExtractedImage 作为图片输入。
-3. 将存储层、llm-service 层错误映射为合适的 HTTP 状态码。
+3. 将存储层与内嵌 LLM 模块错误映射为合适的 HTTP 状态码。
 
 说明：
 - 本模块负责 API 编排和错误映射，不直接调用上游 OpenAI-compatible 接口。
@@ -20,7 +20,13 @@ from sqlmodel import Session
 
 from ...core.logging import build_log_extra, get_request_id
 from ...database import get_session
-from ...services import LlmImageUrlInputPart, LlmServiceClient, LlmTextInputPart, MinioStorage
+from ...services import (
+    LlmChatPersistenceError,
+    LlmImageUrlInputPart,
+    LlmServiceClient,
+    LlmTextInputPart,
+    MinioStorage,
+)
 from ..dependencies import get_extracted_image_or_404, get_llm_service_client, get_minio_storage
 
 router = APIRouter(prefix="/llm", tags=["llm"])
@@ -31,8 +37,6 @@ _MAX_EXTRACTED_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 class LlmAvailabilityRead(BaseModel):
-    """LLM 服务可用性响应。"""
-
     available: bool
     service: str
     health_path: str | None = None
@@ -40,8 +44,6 @@ class LlmAvailabilityRead(BaseModel):
 
 
 class LlmChatRequest(BaseModel):
-    """对外聊天请求。"""
-
     prompt: str = Field(min_length=1)
     system_prompt: str | None = None
     model: str | None = None
@@ -52,16 +54,12 @@ class LlmChatRequest(BaseModel):
 
 
 class LlmUsageRead(BaseModel):
-    """token 用量响应。"""
-
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
 
 
 class LlmChatRead(BaseModel):
-    """聊天响应。"""
-
     text: str
     model: str
     usage: LlmUsageRead
@@ -70,28 +68,26 @@ class LlmChatRead(BaseModel):
 
 @router.get("/availability", response_model=LlmAvailabilityRead)
 def get_llm_availability(client: LlmServiceClient = Depends(get_llm_service_client)) -> LlmAvailabilityRead:
-    """检查 llm-service 存活状态。"""
     available, error = client.check_availability()
     if available:
         return LlmAvailabilityRead(
             available=True,
-            service="llm-service",
-            health_path="/health",
+            service="backend",
+            health_path="/internal/llm/health",
         )
 
     logger.warning(
-        "llm-service is unavailable",
+        "Embedded LLM module is unavailable",
         extra=build_log_extra("llm.availability.unavailable", error=error),
     )
     return LlmAvailabilityRead(
         available=False,
-        service="llm-service",
+        service="backend",
         error=error,
     )
 
 
 def _to_data_url(payload: bytes, *, content_type: str) -> str:
-    """将图片字节转换为 data URL，供 llm-service 多模态输入复用。"""
     encoded = base64.b64encode(payload).decode("ascii")
     return f"data:{content_type};base64,{encoded}"
 
@@ -102,7 +98,6 @@ def _build_extracted_image_input_parts(
     session: Session,
     storage: MinioStorage,
 ) -> list[LlmImageUrlInputPart]:
-    """将 extracted image 列表转换为聊天附件输入块。"""
     if len(extracted_image_ids) > _MAX_EXTRACTED_IMAGES_PER_CHAT:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -112,7 +107,7 @@ def _build_extracted_image_input_parts(
     input_parts: list[LlmImageUrlInputPart] = []
     for image_id in extracted_image_ids:
         extracted_image = get_extracted_image_or_404(image_id, session)
-        content_type = (extracted_image.content_type or "").split(";")[0].strip().lower()
+        content_type = (extracted_image.content_type or "").split(";", 1)[0].strip().lower()
         if not content_type.startswith("image/"):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -157,7 +152,6 @@ def chat(
     session: Session = Depends(get_session),
     storage: MinioStorage = Depends(get_minio_storage),
 ) -> LlmChatRead:
-    """处理对外聊天请求，并在需要时附带已落库图片。"""
     prompt = payload.prompt.strip()
     if not prompt:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="prompt is required")
@@ -174,7 +168,7 @@ def chat(
         input_parts = [LlmTextInputPart(text=prompt), *image_input_parts]
 
     logger.info(
-        "Forwarding llm chat request",
+        "Forwarding llm chat request to embedded module",
         extra=build_log_extra(
             "llm.chat.started",
             request_id=resolved_request_id,
@@ -184,18 +178,31 @@ def chat(
         ),
     )
 
-    result, error = client.chat(
-        prompt=prompt,
-        system_prompt=payload.system_prompt,
-        model=payload.model,
-        temperature=payload.temperature,
-        max_tokens=payload.max_tokens,
-        request_id=resolved_request_id,
-        input_parts=input_parts,
-    )
+    try:
+        result, error = client.chat(
+            prompt=prompt,
+            system_prompt=payload.system_prompt,
+            model=payload.model,
+            temperature=payload.temperature,
+            max_tokens=payload.max_tokens,
+            request_id=resolved_request_id,
+            input_parts=input_parts,
+        )
+    except LlmChatPersistenceError as exc:
+        logger.warning(
+            "Embedded LLM persistence failed",
+            extra=build_log_extra(
+                "llm.chat.persistence_failed",
+                request_id=resolved_request_id,
+                extracted_image_count=len(extracted_image_ids),
+                error=str(exc),
+            ),
+        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
     if error is not None or result is None:
         logger.warning(
-            "llm-service chat failed",
+            "Embedded LLM chat failed",
             extra=build_log_extra(
                 "llm.chat.failed",
                 request_id=resolved_request_id,
@@ -205,11 +212,11 @@ def chat(
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"llm-service chat failed: {error}",
+            detail=f"llm chat failed: {error}",
         )
 
     logger.info(
-        "llm-service chat succeeded",
+        "Embedded LLM chat succeeded",
         extra=build_log_extra(
             "llm.chat.succeeded",
             request_id=result.request_id,
