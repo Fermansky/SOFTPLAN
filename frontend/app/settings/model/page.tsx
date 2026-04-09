@@ -564,9 +564,15 @@ export default function ModelSettingsPage() {
       const result = await validateLlmConfig(detail.id, validationDepth)
       setValidationResult(result)
       setValidationForId(detail.id)
-      toast.success(result.valid ? "校验通过" : "校验完成", {
-        description: result.valid ? "配置已通过当前深度的连通性校验。" : result.error_message ?? "请查看校验结果中的失败原因。",
-      })
+      if (result.valid) {
+        toast.success("校验通过", {
+          description: "配置已通过当前深度的连通性校验。",
+        })
+      } else {
+        toast.warning("校验未通过", {
+          description: result.error_message ?? "当前配置已返回校验结果，但结果不理想，请查看失败阶段与原因。",
+        })
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "校验模型配置失败，请重试。"
       setFormError(message)
@@ -607,7 +613,7 @@ export default function ModelSettingsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 xl:overflow-hidden">
-      <Card className="shrink-0">
+      <Card className="shrink-0 xl:m-1">
         <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-1">
             <CardTitle>模型配置概览</CardTitle>
@@ -646,7 +652,7 @@ export default function ModelSettingsPage() {
       </Card>
 
       <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[320px_minmax(0,1fr)] xl:overflow-hidden">
-        <Card className="flex min-h-0 flex-col xl:h-full">
+        <Card className="flex min-h-0 flex-col xl:my-3 xl:mx-1">
           <CardHeader>
             <CardTitle>配置列表</CardTitle>
             <CardDescription>默认优先选中当前激活配置，也可以切换到其它配置继续编辑。</CardDescription>
@@ -715,8 +721,8 @@ export default function ModelSettingsPage() {
         <div className="min-h-0 xl:h-full">
           <div className="flex h-full min-h-0 flex-col xl:overflow-hidden">
             <div className="min-h-0 flex-1 xl:overflow-y-auto xl:[scrollbar-gutter:stable]">
-              <div className="space-y-4 px-px xl:pr-3 xl:pb-3">
-          <Card className="shrink-0">
+              <div className="space-y-4 px-px xl:pr-3 xl:py-3">
+          <Card className="shrink-0 xl:pb-0">
             <CardHeader>
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div className="space-y-1">
@@ -934,7 +940,7 @@ export default function ModelSettingsPage() {
 
                   {formError ? <p className="md:col-span-2 text-sm text-destructive">{formError}</p> : null}
                 </CardContent>
-                <CardFooter className="flex flex-col items-stretch justify-between gap-3 border-t border-slate-200 bg-slate-50 sm:flex-row sm:items-center">
+                <CardFooter className="flex flex-col items-stretch justify-between gap-3 border-t border-slate-200 bg-slate-50 xl:mt-4 sm:flex-row sm:items-center">
                   <div className="flex flex-wrap gap-2">
                     {!isCreateMode && detail ? (
                       <AlertDialog>
@@ -1003,3 +1009,4 @@ export default function ModelSettingsPage() {
     </div>
   )
 }
+

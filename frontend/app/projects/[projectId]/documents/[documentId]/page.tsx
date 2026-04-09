@@ -210,7 +210,7 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="pb-0">
             <CardHeader>
               <CardTitle>编辑文档</CardTitle>
             </CardHeader>

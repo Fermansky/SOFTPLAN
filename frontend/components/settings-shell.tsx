@@ -50,7 +50,7 @@ export function SettingsShell({ children }: { children: ReactNode }) {
           <aside className="min-h-0 border-b border-slate-200 bg-slate-50/80 xl:overflow-y-auto xl:border-r xl:border-b-0">
             <div className="border-b border-slate-200 px-5 py-5">
               <div className="flex items-center gap-3">
-                <div className="flex size-11 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-sm">
+                <div className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-sm">
                   <Settings2 className="size-5" />
                 </div>
                 <div className="min-w-0">
@@ -119,7 +119,7 @@ export function SettingsShell({ children }: { children: ReactNode }) {
             <div className="shrink-0 border-b border-slate-200 px-5 py-4 lg:px-6">
               <p className="text-sm font-semibold text-slate-900">{currentItem.label}</p>
               <p className="mt-1 text-sm text-slate-500">
-                右侧区域承载当前设置项的详细内容，后续可以在这里继续补充完整的配置表单与状态信息。
+                配置系统接入的大语言模型服务。
               </p>
             </div>
 
