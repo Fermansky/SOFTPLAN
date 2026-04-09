@@ -1,4 +1,4 @@
-from .document_parsing_task_service import (
+﻿from .document_parsing_task_service import (
     DocumentParsingImageSemanticResult,
     DocumentParsingTaskSubmissionResult,
     create_or_reuse_document_parsing_task,
@@ -78,9 +78,12 @@ from .llm_config_service import (
     serialize_llm_config,
     serialize_llm_config_list_item,
     update_llm_config,
+    validate_llm_config_values,
 )
 from .llm_service import (
     LlmChatResult,
+    LlmConfigValidationDepth,
+    LlmConfigValidationResult,
     LlmImageUrlInputPart,
     LlmInputPart,
     LlmServiceClient,
@@ -89,6 +92,8 @@ from .llm_service import (
     get_llm_service_client,
     load_llm_service_config,
     log_llm_service_config,
+    validate_llm_config_by_id,
+    validate_llm_service_config,
 )
 from .minio_storage import MinioStorage, StoredObjectRef, get_minio_storage
 
@@ -107,7 +112,9 @@ __all__ = [
     "LlmConfigError",
     "LlmConfigNotFoundError",
     "LlmConfigResolutionError",
+    "LlmConfigValidationDepth",
     "LlmConfigValidationError",
+    "LlmConfigValidationResult",
     "LlmImageUrlInputPart",
     "LlmInputPart",
     "LlmServiceClient",
@@ -131,6 +138,7 @@ __all__ = [
     "execute_layout_analysis_task",
     "get_active_extracted_image_semantic_task",
     "get_active_layout_analysis_task_for_document",
+    "get_active_llm_config",
     "get_document_parsing_image_items",
     "get_document_parsing_image_semantic_result",
     "get_document_parsing_task_by_id",
@@ -142,22 +150,21 @@ __all__ = [
     "get_extracted_image_semantic_task_worker",
     "get_file_convert_service_client",
     "get_latest_document_parsing_task_for_document_file",
-    "get_latest_succeeded_document_parsing_task_for_document_file",
     "get_latest_extracted_image_semantic_task_for_image",
     "get_latest_layout_analysis_task_for_document_file",
+    "get_latest_succeeded_document_parsing_task_for_document_file",
     "get_latest_succeeded_layout_analysis_task_for_file",
     "get_layout_analysis_task_by_id",
     "get_layout_analysis_task_worker",
-    "get_active_llm_config",
     "get_layout_task_for_document_parsing_task",
     "get_llm_config_or_raise",
     "get_llm_service_client",
     "get_minio_storage",
     "is_extracted_image_semantic_task_worker_enabled",
     "is_layout_analysis_task_worker_enabled",
+    "list_llm_configs",
     "load_extracted_image_semantic_prompt",
     "load_llm_service_config",
-    "list_llm_configs",
     "log_llm_service_config",
     "persist_llm_chat_record",
     "process_document_parsing_tasks_for_layout_task",
@@ -177,7 +184,7 @@ __all__ = [
     "synchronize_document_parsing_task",
     "update_llm_config",
     "upload_document_with_dedupe",
+    "validate_llm_config_by_id",
+    "validate_llm_config_values",
+    "validate_llm_service_config",
 ]
-
-
-

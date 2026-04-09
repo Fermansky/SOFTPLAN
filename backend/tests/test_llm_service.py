@@ -1,4 +1,4 @@
-import shutil
+﻿import shutil
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
@@ -17,15 +17,26 @@ from backend.app.models import LlmChatRecord, LlmChatRecordStatus, LlmConfig, Ll
 
 
 class _ResponseStub:
-    def __init__(self, payload, status_code: int = 200, headers: dict[str, str] | None = None, text: str = ""):
+    def __init__(
+        self,
+        payload,
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+        text: str = "",
+        method: str = "POST",
+        url: str = "https://example.com/v1/chat/completions",
+    ):
         self._payload = payload
         self.status_code = status_code
         self.headers = headers or {}
         self.text = text
+        self._method = method
+        self._url = url
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
-            request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+            request = httpx.Request(self._method, self._url)
             response = httpx.Response(self.status_code, text=self.text, headers=self.headers, request=request)
             raise httpx.HTTPStatusError("upstream error", request=request, response=response)
 
@@ -143,6 +154,17 @@ class BackendLlmIntegrationTests(TestCase):
         self.assertTrue(configs[0].is_active)
         self.assertEqual(configs[0].base_url, "https://example.com/v1")
         self.assertEqual(configs[0].default_model, "gpt-test")
+
+    def test_bootstrap_without_api_key_creates_disabled_draft_config(self):
+        with patch.dict("os.environ", {"LLM_API_KEY": ""}, clear=False):
+            self._start_client()
+
+        configs = self._load_configs()
+        self.assertEqual(len(configs), 1)
+        self.assertEqual(configs[0].code, "default")
+        self.assertFalse(configs[0].enabled)
+        self.assertFalse(configs[0].is_active)
+        self.assertEqual(configs[0].api_key, "")
 
     def test_bootstrap_skips_when_config_already_exists(self):
         self._create_test_tables()
@@ -268,6 +290,116 @@ class BackendLlmIntegrationTests(TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["detail"], "No active LLM config is configured")
 
+    def test_availability_returns_false_when_probe_request_fails(self):
+        self._start_client()
+
+        request = httpx.Request("GET", "https://example.com/v1/models")
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            side_effect=httpx.ConnectError("dns failed", request=request),
+        ):
+            response = self.client.get("/llm/availability")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["available"])
+        self.assertIn("Upstream request error", response.json()["error"])
+
+    def test_validate_endpoint_reports_basic_success(self):
+        self._start_client()
+        active_config = self._load_configs()[0]
+
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            return_value=_ResponseStub(
+                {"data": [{"id": "gpt-test"}]},
+                method="GET",
+                url="https://example.com/v1/models",
+            ),
+        ):
+            response = self.client.post(f"/llm/configs/{active_config.id}/validate?depth=basic")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["valid"])
+        self.assertEqual(payload["stage"], "network")
+        self.assertFalse(payload["model_checked"])
+
+    def test_validate_endpoint_reports_model_not_found_on_strict_probe(self):
+        self._start_client()
+        active_config = self._load_configs()[0]
+
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            return_value=_ResponseStub(
+                {"data": [{"id": "other-model"}]},
+                method="GET",
+                url="https://example.com/v1/models",
+            ),
+        ):
+            response = self.client.post(f"/llm/configs/{active_config.id}/validate?depth=strict")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["valid"])
+        self.assertEqual(payload["stage"], "model")
+        self.assertEqual(payload["error_code"], "model_not_found")
+
+    def test_validate_endpoint_falls_back_to_chat_probe_when_models_endpoint_is_unavailable(self):
+        self._start_client()
+        active_config = self._load_configs()[0]
+
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            return_value=_ResponseStub(
+                {"error": "not found"},
+                status_code=404,
+                text="not found",
+                method="GET",
+                url="https://example.com/v1/models",
+            ),
+        ), patch(
+            "backend.app.services.llm_service.httpx.post",
+            return_value=_ResponseStub(
+                {
+                    "id": "chatcmpl-probe",
+                    "model": "gpt-test",
+                    "choices": [{"message": {"content": "ok"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                },
+                method="POST",
+                url="https://example.com/v1/chat/completions",
+            ),
+        ):
+            response = self.client.post(f"/llm/configs/{active_config.id}/validate?depth=strict")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["valid"])
+        self.assertEqual(payload["stage"], "model")
+        self.assertTrue(payload["model_checked"])
+
+    def test_validate_endpoint_reports_auth_failure(self):
+        self._start_client()
+        active_config = self._load_configs()[0]
+
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            return_value=_ResponseStub(
+                {"error": "unauthorized"},
+                status_code=401,
+                text="unauthorized",
+                method="GET",
+                url="https://example.com/v1/models",
+            ),
+        ):
+            response = self.client.post(f"/llm/configs/{active_config.id}/validate?depth=basic")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["valid"])
+        self.assertEqual(payload["stage"], "auth")
+        self.assertEqual(payload["error_code"], "auth_failed")
+
     def test_chat_returns_409_for_disabled_requested_config(self):
         self._start_client()
         disabled_config = self._create_config(code="disabled-1", name="Disabled", enabled=False)
@@ -283,7 +415,67 @@ class BackendLlmIntegrationTests(TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["detail"], "LLM config is disabled")
 
-    def test_config_crud_activation_and_soft_delete_flow(self):
+    def test_create_and_update_validate_static_fields(self):
+        self._start_client()
+
+        create_invalid_url = self.client.post(
+            "/llm/configs",
+            json={
+                "code": "bad-url",
+                "name": "Bad Url",
+                "provider": "openai_compatible",
+                "base_url": "ftp://tenant.example.com/v1",
+                "api_key": "tenant-secret",
+                "default_model": "gpt-tenant",
+                "timeout_seconds": 12,
+                "enabled": True,
+                "is_active": False,
+            },
+        )
+        self.assertEqual(create_invalid_url.status_code, 422)
+        self.assertIn("must use http or https", create_invalid_url.json()["detail"])
+
+        create_missing_key = self.client.post(
+            "/llm/configs",
+            json={
+                "code": "missing-key",
+                "name": "Missing Key",
+                "provider": "openai_compatible",
+                "base_url": "https://tenant.example.com/v1",
+                "api_key": "   ",
+                "default_model": "gpt-tenant",
+                "timeout_seconds": 12,
+                "enabled": True,
+                "is_active": False,
+            },
+        )
+        self.assertEqual(create_missing_key.status_code, 422)
+        self.assertIn("api key is required", create_missing_key.json()["detail"])
+
+        create_response = self.client.post(
+            "/llm/configs",
+            json={
+                "code": "tenant-a",
+                "name": "Tenant A",
+                "provider": "openai_compatible",
+                "base_url": "https://tenant.example.com/v1/",
+                "api_key": "tenant-secret-1234",
+                "default_model": "gpt-tenant",
+                "timeout_seconds": 12,
+                "enabled": True,
+                "is_active": False,
+            },
+        )
+        self.assertEqual(create_response.status_code, 201)
+
+        update_invalid_model = self.client.patch(
+            f"/llm/configs/{create_response.json()['id']}",
+            json={"default_model": "   "},
+        )
+        self.assertEqual(update_invalid_model.status_code, 422)
+        self.assertIn("default model is required", update_invalid_model.json()["detail"])
+
+    def test_activation_requires_strict_probe_success(self):
         self._start_client()
 
         create_response = self.client.post(
@@ -301,30 +493,91 @@ class BackendLlmIntegrationTests(TestCase):
             },
         )
         self.assertEqual(create_response.status_code, 201)
+        created_id = create_response.json()["id"]
+        created_uuid = UUID(created_id)
+
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            return_value=_ResponseStub(
+                {"data": [{"id": "other-model"}]},
+                method="GET",
+                url="https://tenant.example.com/v1/models",
+            ),
+        ):
+            activate_failure = self.client.post(f"/llm/configs/{created_id}/activate")
+
+        self.assertEqual(activate_failure.status_code, 409)
+        self.assertIn("validation failed at model", activate_failure.json()["detail"])
+
+        with Session(self._engine) as session:
+            created = session.get(LlmConfig, created_uuid)
+            default_active = session.exec(select(LlmConfig).where(LlmConfig.code == "default")).one()
+            self.assertFalse(created.is_active)
+            self.assertTrue(default_active.is_active)
+
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            return_value=_ResponseStub(
+                {"data": [{"id": "gpt-tenant"}]},
+                method="GET",
+                url="https://tenant.example.com/v1/models",
+            ),
+        ):
+            activate_success = self.client.post(f"/llm/configs/{created_id}/activate")
+
+        self.assertEqual(activate_success.status_code, 200)
+        self.assertTrue(activate_success.json()["is_active"])
+
+    def test_config_crud_activation_and_soft_delete_flow(self):
+        self._start_client()
+
+        create_response = self.client.post(
+            "/llm/configs",
+            json={
+                "code": "tenant-b",
+                "name": "Tenant B",
+                "provider": "openai_compatible",
+                "base_url": "https://tenant-b.example.com/v1/",
+                "api_key": "tenant-secret-5678",
+                "default_model": "gpt-tenant-b",
+                "timeout_seconds": 12,
+                "enabled": True,
+                "is_active": False,
+            },
+        )
+        self.assertEqual(create_response.status_code, 201)
         created_payload = create_response.json()
-        self.assertEqual(created_payload["base_url"], "https://tenant.example.com/v1")
+        self.assertEqual(created_payload["base_url"], "https://tenant-b.example.com/v1")
         self.assertTrue(created_payload["has_api_key"])
-        self.assertNotEqual(created_payload["api_key_masked"], "tenant-secret-1234")
+        self.assertNotEqual(created_payload["api_key_masked"], "tenant-secret-5678")
         created_id = created_payload["id"]
         created_uuid = UUID(created_id)
 
         patch_response = self.client.patch(
             f"/llm/configs/{created_id}",
             json={
-                "name": "Tenant A Updated",
-                "base_url": "https://tenant2.example.com/v1/",
+                "name": "Tenant B Updated",
+                "base_url": "https://tenant-b2.example.com/v1/",
             },
         )
         self.assertEqual(patch_response.status_code, 200)
-        self.assertEqual(patch_response.json()["name"], "Tenant A Updated")
-        self.assertEqual(patch_response.json()["base_url"], "https://tenant2.example.com/v1")
+        self.assertEqual(patch_response.json()["name"], "Tenant B Updated")
+        self.assertEqual(patch_response.json()["base_url"], "https://tenant-b2.example.com/v1")
         self.assertTrue(patch_response.json()["has_api_key"])
 
         with Session(self._engine) as session:
             updated = session.get(LlmConfig, created_uuid)
-            self.assertEqual(updated.api_key, "tenant-secret-1234")
+            self.assertEqual(updated.api_key, "tenant-secret-5678")
 
-        activate_response = self.client.post(f"/llm/configs/{created_id}/activate")
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            return_value=_ResponseStub(
+                {"data": [{"id": "gpt-tenant-b"}]},
+                method="GET",
+                url="https://tenant-b2.example.com/v1/models",
+            ),
+        ):
+            activate_response = self.client.post(f"/llm/configs/{created_id}/activate")
         self.assertEqual(activate_response.status_code, 200)
         self.assertTrue(activate_response.json()["is_active"])
 
@@ -337,7 +590,15 @@ class BackendLlmIntegrationTests(TestCase):
         self.assertGreaterEqual(len(configs_response.json()), 2)
 
         default_config = next(item for item in configs_response.json() if item["code"] == "default")
-        switch_back_response = self.client.post(f"/llm/configs/{default_config['id']}/activate")
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            return_value=_ResponseStub(
+                {"data": [{"id": "gpt-test"}]},
+                method="GET",
+                url="https://example.com/v1/models",
+            ),
+        ):
+            switch_back_response = self.client.post(f"/llm/configs/{default_config['id']}/activate")
         self.assertEqual(switch_back_response.status_code, 200)
 
         delete_response = self.client.delete(f"/llm/configs/{created_id}")
@@ -357,6 +618,3 @@ class BackendLlmIntegrationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["code"], "default")
         self.assertTrue(response.json()["is_active"])
-
-
-

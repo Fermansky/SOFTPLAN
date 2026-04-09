@@ -1,7 +1,7 @@
-"""LLM 路由与配置管理。
+﻿"""LLM 路由与配置管理。
 
 职责：
-1. 提供 LLM 配置的查询、创建、更新、激活与删除接口。
+1. 提供 LLM 配置的查询、创建、更新、激活、校验与删除接口。
 2. 提供 LLM 可用性探针和对话转发接口。
 3. 负责把抽取图片转换为对话输入片段。
 
@@ -28,7 +28,9 @@ from ...services import (
     LlmConfigDisabledError,
     LlmConfigNotFoundError,
     LlmConfigResolutionError,
+    LlmConfigValidationDepth,
     LlmConfigValidationError,
+    LlmConfigValidationResult,
     LlmImageUrlInputPart,
     LlmTextInputPart,
     MinioStorage,
@@ -42,6 +44,7 @@ from ...services import (
     serialize_llm_config,
     serialize_llm_config_list_item,
     update_llm_config,
+    validate_llm_config_by_id,
 )
 from ..dependencies import get_extracted_image_or_404, get_minio_storage
 
@@ -59,6 +62,19 @@ class LlmAvailabilityRead(BaseModel):
     service: str
     health_path: str | None = None
     error: str | None = None
+
+
+class LlmConfigValidationRead(BaseModel):
+    """LLM 配置校验结果视图。"""
+
+    valid: bool
+    stage: str
+    normalized_base_url: str
+    model_checked: bool
+    latency_ms: int | None = None
+    http_status: int | None = None
+    error_code: str | None = None
+    error_message: str | None = None
 
 
 class LlmChatRequest(BaseModel):
@@ -105,6 +121,21 @@ def _raise_llm_config_http_error(exc: Exception) -> None:
     if isinstance(exc, LlmConfigValidationError):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     raise exc
+
+
+def _to_validation_read(result: LlmConfigValidationResult) -> LlmConfigValidationRead:
+    """把服务层探针结果转换为 API 返回模型。"""
+
+    return LlmConfigValidationRead(
+        valid=result.valid,
+        stage=result.stage,
+        normalized_base_url=result.normalized_base_url,
+        model_checked=result.model_checked,
+        latency_ms=result.latency_ms,
+        http_status=result.http_status,
+        error_code=result.error_code,
+        error_message=result.error_message,
+    )
 
 
 @router.get("/configs/active", response_model=LlmConfigRead)
@@ -170,13 +201,38 @@ def update_llm_config_route(
 
 @router.post("/configs/{config_id}/activate", response_model=LlmConfigRead)
 def activate_llm_config_route(config_id: UUID, session: Session = Depends(get_session)) -> LlmConfigRead:
-    """激活指定 LLM 配置。"""
+    """激活指定 LLM 配置。
+
+    失败语义：
+    - 配置被禁用时返回 409。
+    - 严格探针失败时返回 409，提示失败阶段与摘要原因。
+    """
 
     try:
         config = activate_llm_config(session, config_id)
     except Exception as exc:
         _raise_llm_config_http_error(exc)
     return serialize_llm_config(config)
+
+
+@router.post("/configs/{config_id}/validate", response_model=LlmConfigValidationRead)
+def validate_llm_config_route(
+    config_id: UUID,
+    depth: LlmConfigValidationDepth = Query(default=LlmConfigValidationDepth.strict),
+    session: Session = Depends(get_session),
+) -> LlmConfigValidationRead:
+    """显式校验指定 LLM 配置的可连接性与可调用性。"""
+
+    try:
+        result = validate_llm_config_by_id(
+            session,
+            config_id,
+            depth=depth,
+            request_id=get_request_id(),
+        )
+    except Exception as exc:
+        _raise_llm_config_http_error(exc)
+    return _to_validation_read(result)
 
 
 @router.delete("/configs/{config_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -195,19 +251,16 @@ def get_llm_availability(
     config_id: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
 ) -> LlmAvailabilityRead:
-    """返回 LLM 模块可用性探针结果。"""
+    """返回 LLM 模块的真实 basic 探针结果。"""
 
     try:
         client = get_llm_service_client(config_id=config_id, session=session)
     except Exception as exc:
         _raise_llm_config_http_error(exc)
 
-    available, error = client.check_availability()
-    if available:
-        return LlmAvailabilityRead(
-            available=True,
-            service="backend",
-        )
+    result = client.probe(LlmConfigValidationDepth.basic, request_id=get_request_id())
+    if result.valid:
+        return LlmAvailabilityRead(available=True, service="backend")
 
     logger.warning(
         "Embedded LLM module is unavailable",
@@ -215,13 +268,15 @@ def get_llm_availability(
             "llm.availability.unavailable",
             config_id=str(config_id) if config_id is not None else str(client.config_id) if client.config_id is not None else None,
             config_code=client.config_code,
-            error=error,
+            stage=result.stage,
+            error_code=result.error_code,
+            error=result.error_message,
         ),
     )
     return LlmAvailabilityRead(
         available=False,
         service="backend",
-        error=error,
+        error=result.error_message,
     )
 
 

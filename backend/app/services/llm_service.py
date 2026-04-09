@@ -3,7 +3,8 @@
 职责：
 1. 根据请求上下文解析当前生效的 LLM 配置，并构造 OpenAI-compatible 客户端。
 2. 统一封装聊天请求、响应校验、错误映射与日志打点。
-3. 在调用结束后写入聊天审计记录，补齐配置快照、耗时与 token 统计。
+3. 提供配置探针能力，用于校验远端连通性、鉴权与模型可用性。
+4. 在调用结束后写入聊天审计记录，补齐配置快照、耗时与 token 统计。
 
 说明：
 - 本模块负责“一次调用”的协议适配与审计落库，不负责配置 CRUD。
@@ -14,6 +15,7 @@
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from time import perf_counter
 from typing import Any
 from uuid import UUID
@@ -23,12 +25,18 @@ from sqlmodel import Session
 
 from ..core.logging import REQUEST_ID_HEADER, build_log_extra, get_request_id
 from ..database import engine
-from ..models import LlmChatRecordStatus
+from ..models import LlmChatRecordStatus, LlmConfig
 from .llm_chat_persistence import persist_llm_chat_record
-from .llm_config_service import resolve_llm_config
+from .llm_config_service import (
+    LlmConfigValidationError,
+    get_llm_config_or_raise,
+    resolve_llm_config,
+    validate_llm_config_values,
+)
 
 logger = logging.getLogger(__name__)
 _MAX_LOG_BODY_LENGTH = 500
+_MAX_PROBE_TIMEOUT_SECONDS = 5.0
 CALLER_SERVICE_NAME = "backend"
 
 
@@ -72,21 +80,37 @@ class LlmServiceConfig:
     timeout_seconds: float
 
 
+class LlmConfigValidationDepth(str, Enum):
+    """LLM 配置探针深度。"""
+
+    basic = "basic"
+    strict = "strict"
+
+
+@dataclass(frozen=True)
+class LlmConfigValidationResult:
+    """LLM 配置探针结果。"""
+
+    valid: bool
+    stage: str
+    normalized_base_url: str
+    model_checked: bool
+    latency_ms: int | None = None
+    http_status: int | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
 class LlmServiceExecutionError(RuntimeError):
     """上游 LLM 请求失败或返回非法载荷时抛出。"""
-
-
-
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-
 def _build_duration_ms(started_at: float) -> int:
     return max(0, round((perf_counter() - started_at) * 1000))
-
 
 
 def _truncate_for_log(value: str, *, limit: int = _MAX_LOG_BODY_LENGTH) -> str:
@@ -95,13 +119,98 @@ def _truncate_for_log(value: str, *, limit: int = _MAX_LOG_BODY_LENGTH) -> str:
     return f"{value[:limit]}...(truncated)"
 
 
+def _probe_timeout_seconds(timeout_seconds: float) -> float:
+    """返回探针请求使用的短超时，避免校验接口被慢上游拖住。"""
 
-def load_llm_service_config(session: Session | None = None, *, config_id: UUID | None = None) -> LlmServiceConfig:
-    if session is None:
-        with Session(engine) as managed_session:
-            return load_llm_service_config(managed_session, config_id=config_id)
+    if timeout_seconds <= 0:
+        return _MAX_PROBE_TIMEOUT_SECONDS
+    return min(timeout_seconds, _MAX_PROBE_TIMEOUT_SECONDS)
 
-    llm_config = resolve_llm_config(session, config_id=config_id)
+
+def _build_probe_headers(api_key: str, *, request_id: str | None) -> dict[str, str]:
+    """构造探针请求头，统一附带鉴权与请求链路标识。"""
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+    }
+    if request_id:
+        headers[REQUEST_ID_HEADER] = request_id
+    return headers
+
+
+def _build_validation_result(
+    *,
+    valid: bool,
+    stage: str,
+    normalized_base_url: str,
+    model_checked: bool,
+    latency_ms: int | None = None,
+    http_status: int | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> LlmConfigValidationResult:
+    """统一创建结构化探针结果，减少不同分支的字段遗漏。"""
+    return LlmConfigValidationResult(
+        valid=valid,
+        stage=stage,
+        normalized_base_url=normalized_base_url,
+        model_checked=model_checked,
+        latency_ms=latency_ms,
+        http_status=http_status,
+        error_code=error_code,
+        error_message=error_message,
+    )
+
+
+def _extract_model_ids(payload: Any) -> list[str]:
+    """从 OpenAI-compatible `/models` 响应里提取可比较的模型标识列表。"""
+
+    items: list[Any] | None = None
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, list):
+            items = data
+        models = payload.get("models")
+        if items is None and isinstance(models, list):
+            items = models
+    elif isinstance(payload, list):
+        items = payload
+
+    if items is None:
+        return []
+
+    model_ids: list[str] = []
+    for item in items:
+        if isinstance(item, str):
+            model_ids.append(item)
+            continue
+        if isinstance(item, dict):
+            model_id = item.get("id") or item.get("name")
+            if isinstance(model_id, str) and model_id:
+                model_ids.append(model_id)
+    return model_ids
+
+
+def _looks_like_model_error(body_text: str) -> bool:
+    """粗略判断上游错误体是否表达了“模型不存在/不可用”语义。"""
+
+    lowered = body_text.lower()
+    return any(
+        needle in lowered
+        for needle in (
+            "model not found",
+            "unknown model",
+            "does not exist",
+            "invalid model",
+            "unsupported model",
+            "no such model",
+        )
+    ) or ("model" in lowered and "not found" in lowered)
+
+
+def build_llm_service_config_from_model(llm_config: LlmConfig) -> LlmServiceConfig:
+    """把持久化配置实体转换为运行时客户端配置。"""
 
     return LlmServiceConfig(
         config_id=llm_config.id,
@@ -113,8 +222,20 @@ def load_llm_service_config(session: Session | None = None, *, config_id: UUID |
     )
 
 
+def load_llm_service_config(session: Session | None = None, *, config_id: UUID | None = None) -> LlmServiceConfig:
+    """解析指定或当前激活的 LLM 配置，并转换为运行时配置对象。"""
+
+    if session is None:
+        with Session(engine) as managed_session:
+            return load_llm_service_config(managed_session, config_id=config_id)
+
+    llm_config = resolve_llm_config(session, config_id=config_id)
+    return build_llm_service_config_from_model(llm_config)
+
 
 def log_llm_service_config(config: LlmServiceConfig | None = None) -> None:
+    """记录当前生效 LLM 配置的关键摘要，便于启动期排障。"""
+
     try:
         resolved_config = config or load_llm_service_config()
     except RuntimeError as exc:
@@ -206,6 +327,328 @@ class LlmServiceClient:
         if isinstance(part, LlmImageUrlInputPart):
             return {"type": "image_url", "image_url": {"url": part.url}}
         raise TypeError(f"Unsupported llm input part: {part!r}")
+
+    def _probe_models(
+        self,
+        *,
+        request_id: str | None,
+    ) -> tuple[LlmConfigValidationResult, list[str] | None, bool]:
+        """调用 `/models` 探测基础连通性，并尽量提取可用模型列表。
+
+        返回值中的布尔位表示 strict 模式下是否允许回退到最小 chat probe。
+        """
+
+        started_at = perf_counter()
+        url = f"{self.base_url}/models"
+        try:
+            response = httpx.get(
+                url,
+                headers=_build_probe_headers(self.api_key, request_id=request_id),
+                timeout=_probe_timeout_seconds(self.timeout_seconds),
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.TimeoutException as exc:
+            return (
+                _build_validation_result(
+                    valid=False,
+                    stage="network",
+                    normalized_base_url=self.base_url,
+                    model_checked=False,
+                    latency_ms=_build_duration_ms(started_at),
+                    error_code="timeout",
+                    error_message=f"Upstream timeout: {exc}",
+                ),
+                None,
+                False,
+            )
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            body_text = _truncate_for_log(exc.response.text.strip())
+            if status_code in {401, 403}:
+                result = _build_validation_result(
+                    valid=False,
+                    stage="auth",
+                    normalized_base_url=self.base_url,
+                    model_checked=False,
+                    latency_ms=_build_duration_ms(started_at),
+                    http_status=status_code,
+                    error_code="auth_failed",
+                    error_message=f"Upstream rejected credentials with HTTP {status_code}",
+                )
+                return result, None, False
+            if status_code in {404, 405, 501}:
+                result = _build_validation_result(
+                    valid=False,
+                    stage="upstream",
+                    normalized_base_url=self.base_url,
+                    model_checked=False,
+                    latency_ms=_build_duration_ms(started_at),
+                    http_status=status_code,
+                    error_code="models_endpoint_unavailable",
+                    error_message=f"Upstream /models endpoint is unavailable with HTTP {status_code}",
+                )
+                return result, None, True
+            result = _build_validation_result(
+                valid=False,
+                stage="upstream",
+                normalized_base_url=self.base_url,
+                model_checked=False,
+                latency_ms=_build_duration_ms(started_at),
+                http_status=status_code,
+                error_code="http_error",
+                error_message=f"Upstream returned HTTP {status_code}: {body_text or 'no body'}",
+            )
+            return result, None, False
+        except httpx.RequestError as exc:
+            return (
+                _build_validation_result(
+                    valid=False,
+                    stage="network",
+                    normalized_base_url=self.base_url,
+                    model_checked=False,
+                    latency_ms=_build_duration_ms(started_at),
+                    error_code="request_error",
+                    error_message=f"Upstream request error: {exc}",
+                ),
+                None,
+                False,
+            )
+        except ValueError as exc:
+            return (
+                _build_validation_result(
+                    valid=False,
+                    stage="upstream",
+                    normalized_base_url=self.base_url,
+                    model_checked=False,
+                    latency_ms=_build_duration_ms(started_at),
+                    error_code="invalid_json",
+                    error_message=f"Invalid upstream JSON payload: {exc}",
+                ),
+                None,
+                False,
+            )
+
+        model_ids = _extract_model_ids(payload)
+        if not model_ids:
+            return (
+                _build_validation_result(
+                    valid=False,
+                    stage="upstream",
+                    normalized_base_url=self.base_url,
+                    model_checked=False,
+                    latency_ms=_build_duration_ms(started_at),
+                    http_status=response.status_code,
+                    error_code="invalid_models_payload",
+                    error_message="Upstream /models response did not include model identifiers",
+                ),
+                None,
+                True,
+            )
+
+        return (
+            _build_validation_result(
+                valid=True,
+                stage="network",
+                normalized_base_url=self.base_url,
+                model_checked=False,
+                latency_ms=_build_duration_ms(started_at),
+                http_status=response.status_code,
+            ),
+            model_ids,
+            False,
+        )
+
+    def _probe_chat_completion(self, *, request_id: str | None) -> LlmConfigValidationResult:
+        """执行最低成本的 chat probe，确认默认模型确实可以被调用。"""
+
+        started_at = perf_counter()
+        url = f"{self.base_url}/chat/completions"
+        headers = _build_probe_headers(self.api_key, request_id=request_id)
+        headers["Content-Type"] = "application/json"
+        request_payload = {
+            "model": self.default_model,
+            "messages": [{"role": "user", "content": "validation probe"}],
+            "max_tokens": 1,
+            "temperature": 0,
+        }
+        try:
+            response = httpx.post(
+                url,
+                json=request_payload,
+                headers=headers,
+                timeout=_probe_timeout_seconds(self.timeout_seconds),
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.TimeoutException as exc:
+            return _build_validation_result(
+                valid=False,
+                stage="network",
+                normalized_base_url=self.base_url,
+                model_checked=True,
+                latency_ms=_build_duration_ms(started_at),
+                error_code="timeout",
+                error_message=f"Upstream timeout: {exc}",
+            )
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            body_text = _truncate_for_log(exc.response.text.strip())
+            if status_code in {401, 403}:
+                return _build_validation_result(
+                    valid=False,
+                    stage="auth",
+                    normalized_base_url=self.base_url,
+                    model_checked=True,
+                    latency_ms=_build_duration_ms(started_at),
+                    http_status=status_code,
+                    error_code="auth_failed",
+                    error_message=f"Upstream rejected credentials with HTTP {status_code}",
+                )
+            if status_code in {400, 404} and _looks_like_model_error(body_text):
+                return _build_validation_result(
+                    valid=False,
+                    stage="model",
+                    normalized_base_url=self.base_url,
+                    model_checked=True,
+                    latency_ms=_build_duration_ms(started_at),
+                    http_status=status_code,
+                    error_code="model_not_found",
+                    error_message=f"Configured model '{self.default_model}' is not available upstream",
+                )
+            return _build_validation_result(
+                valid=False,
+                stage="upstream",
+                normalized_base_url=self.base_url,
+                model_checked=True,
+                latency_ms=_build_duration_ms(started_at),
+                http_status=status_code,
+                error_code="http_error",
+                error_message=f"Upstream returned HTTP {status_code}: {body_text or 'no body'}",
+            )
+        except httpx.RequestError as exc:
+            return _build_validation_result(
+                valid=False,
+                stage="network",
+                normalized_base_url=self.base_url,
+                model_checked=True,
+                latency_ms=_build_duration_ms(started_at),
+                error_code="request_error",
+                error_message=f"Upstream request error: {exc}",
+            )
+        except ValueError as exc:
+            return _build_validation_result(
+                valid=False,
+                stage="upstream",
+                normalized_base_url=self.base_url,
+                model_checked=True,
+                latency_ms=_build_duration_ms(started_at),
+                error_code="invalid_json",
+                error_message=f"Invalid upstream JSON payload: {exc}",
+            )
+
+        if not isinstance(payload, dict):
+            return _build_validation_result(
+                valid=False,
+                stage="upstream",
+                normalized_base_url=self.base_url,
+                model_checked=True,
+                latency_ms=_build_duration_ms(started_at),
+                http_status=response.status_code,
+                error_code="invalid_payload",
+                error_message=f"Unexpected upstream payload: {payload!r}",
+            )
+
+        try:
+            self._extract_text(payload)
+        except LlmServiceExecutionError as exc:
+            return _build_validation_result(
+                valid=False,
+                stage="upstream",
+                normalized_base_url=self.base_url,
+                model_checked=True,
+                latency_ms=_build_duration_ms(started_at),
+                http_status=response.status_code,
+                error_code="invalid_payload",
+                error_message=str(exc),
+            )
+
+        return _build_validation_result(
+            valid=True,
+            stage="model",
+            normalized_base_url=self.base_url,
+            model_checked=True,
+            latency_ms=_build_duration_ms(started_at),
+            http_status=response.status_code,
+        )
+
+    def probe(
+        self,
+        depth: LlmConfigValidationDepth = LlmConfigValidationDepth.basic,
+        *,
+        request_id: str | None = None,
+    ) -> LlmConfigValidationResult:
+        """执行 LLM 配置探针。
+
+        `basic` 只验证静态合法性与远端可连接性；`strict` 还会确认默认模型是否可用。
+        """
+
+        normalized_base_url = self.base_url.strip().rstrip("/")
+        try:
+            validated = validate_llm_config_values(
+                base_url=self.base_url,
+                api_key=self.api_key,
+                default_model=self.default_model,
+                timeout_seconds=self.timeout_seconds,
+                require_api_key=True,
+            )
+        except LlmConfigValidationError as exc:
+            return _build_validation_result(
+                valid=False,
+                stage="static",
+                normalized_base_url=normalized_base_url,
+                model_checked=False,
+                error_code="invalid_config",
+                error_message=str(exc),
+            )
+
+        probe_client = LlmServiceClient(
+            config_id=self.config_id,
+            config_code=self.config_code,
+            base_url=validated["base_url"],
+            api_key=validated["api_key"],
+            default_model=validated["default_model"],
+            timeout_seconds=validated["timeout_seconds"],
+        )
+        models_result, model_ids, fallback_allowed = probe_client._probe_models(request_id=request_id)
+        if depth == LlmConfigValidationDepth.basic:
+            return models_result
+
+        if models_result.valid:
+            if probe_client.default_model in (model_ids or []):
+                return _build_validation_result(
+                    valid=True,
+                    stage="model",
+                    normalized_base_url=probe_client.base_url,
+                    model_checked=True,
+                    latency_ms=models_result.latency_ms,
+                    http_status=models_result.http_status,
+                )
+            return _build_validation_result(
+                valid=False,
+                stage="model",
+                normalized_base_url=probe_client.base_url,
+                model_checked=True,
+                latency_ms=models_result.latency_ms,
+                http_status=models_result.http_status,
+                error_code="model_not_found",
+                error_message=f"Configured model '{probe_client.default_model}' is not listed by upstream",
+            )
+
+        if not fallback_allowed:
+            return models_result
+
+        return probe_client._probe_chat_completion(request_id=request_id)
 
     def _execute_upstream_chat(
         self,
@@ -396,11 +839,10 @@ class LlmServiceClient:
         )
 
     def check_availability(self) -> tuple[bool, str | None]:
-        if not self.base_url:
-            return False, "LLM api base url is not configured"
-        if not self.api_key.strip():
-            return False, "LLM api key is not configured"
-        return True, None
+        """兼容旧调用方的可用性检查接口，内部委托给 basic probe。"""
+
+        result = self.probe(LlmConfigValidationDepth.basic)
+        return result.valid, result.error_message
 
     def chat(
         self,
@@ -474,8 +916,45 @@ class LlmServiceClient:
         return result, None
 
 
+def validate_llm_service_config(
+    config: LlmServiceConfig,
+    *,
+    depth: LlmConfigValidationDepth = LlmConfigValidationDepth.basic,
+    request_id: str | None = None,
+) -> LlmConfigValidationResult:
+    """对运行时配置对象执行探针，适合激活前复用。"""
+
+    client = LlmServiceClient(
+        config_id=config.config_id,
+        config_code=config.config_code,
+        base_url=config.base_url,
+        api_key=config.api_key,
+        default_model=config.default_model,
+        timeout_seconds=config.timeout_seconds,
+    )
+    return client.probe(depth=depth, request_id=request_id)
+
+
+def validate_llm_config_by_id(
+    session: Session,
+    config_id: UUID,
+    *,
+    depth: LlmConfigValidationDepth = LlmConfigValidationDepth.basic,
+    request_id: str | None = None,
+) -> LlmConfigValidationResult:
+    """按配置 id 读取持久化配置并执行指定深度的探针。"""
+
+    llm_config = get_llm_config_or_raise(session, config_id)
+    return validate_llm_service_config(
+        build_llm_service_config_from_model(llm_config),
+        depth=depth,
+        request_id=request_id,
+    )
+
 
 def get_llm_service_client(*, config_id: UUID | None = None, session: Session | None = None) -> LlmServiceClient:
+    """根据指定配置或当前激活配置构造 LLM 服务客户端。"""
+
     config = load_llm_service_config(session=session, config_id=config_id)
     return LlmServiceClient(
         config_id=config.config_id,
@@ -485,6 +964,4 @@ def get_llm_service_client(*, config_id: UUID | None = None, session: Session | 
         default_model=config.default_model,
         timeout_seconds=config.timeout_seconds,
     )
-
-
 
