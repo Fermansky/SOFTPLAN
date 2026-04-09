@@ -22,6 +22,7 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ApiDocument, formatDate, getApiBaseUrl, listProjectDocuments } from "@/lib/documents"
+import { PAGE_CONTAINER_CLASS } from "@/lib/layout"
 
 type ApiProjectStatus = "draft" | "analyzing" | "completed" | "archived"
 
@@ -46,48 +47,69 @@ function getStatusMeta(status: ApiProjectStatus) {
   return map[status]
 }
 
-function DocumentsTableSkeleton() {
+function DocumentsListSkeleton() {
   return (
-    <Table className="min-w-[960px]">
-      <TableHeader>
-        <TableRow className="hover:bg-transparent">
-          <TableHead>文档名称</TableHead>
-          <TableHead>软件 ID</TableHead>
-          <TableHead>描述</TableHead>
-          <TableHead>创建时间</TableHead>
-          <TableHead>更新时间</TableHead>
-          <TableHead>操作</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {Array.from({ length: 3 }).map((_, index) => (
-          <TableRow key={index}>
-            <TableCell>
-              <Skeleton className="h-4 w-44" />
-            </TableCell>
-            <TableCell>
+    <>
+      <div className="hidden md:block">
+        <Table className="table-fixed">
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="w-[46%]">文档</TableHead>
+              <TableHead className="w-[18%]">软件</TableHead>
+              <TableHead className="w-[20%]">时间</TableHead>
+              <TableHead className="w-[16%]">操作</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {Array.from({ length: 3 }).map((_, index) => (
+              <TableRow key={index}>
+                <TableCell>
+                  <div className="space-y-2">
+                    <Skeleton className="h-4 w-44" />
+                    <Skeleton className="h-3 w-3/4" />
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <Skeleton className="h-4 w-full" />
+                </TableCell>
+                <TableCell>
+                  <div className="space-y-2">
+                    <Skeleton className="h-4 w-28" />
+                    <Skeleton className="h-3 w-24" />
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <div className="flex flex-col gap-2">
+                    <Skeleton className="h-8 w-full" />
+                    <Skeleton className="h-8 w-full" />
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+
+      <div className="grid gap-3 md:hidden">
+        {Array.from({ length: 2 }).map((_, index) => (
+          <div key={index} className="rounded-xl border border-slate-200 bg-slate-50/80 p-4">
+            <div className="space-y-2">
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-3 w-full" />
+              <Skeleton className="h-3 w-2/3" />
+            </div>
+            <div className="mt-4 grid gap-2">
               <Skeleton className="h-4 w-28" />
-            </TableCell>
-            <TableCell>
-              <Skeleton className="h-4 w-56" />
-            </TableCell>
-            <TableCell>
-              <Skeleton className="h-4 w-32" />
-            </TableCell>
-            <TableCell>
-              <Skeleton className="h-4 w-32" />
-            </TableCell>
-            <TableCell>
-              <div className="flex gap-2">
-                <Skeleton className="h-8 w-16" />
-                <Skeleton className="h-8 w-16" />
-                <Skeleton className="h-8 w-14" />
-              </div>
-            </TableCell>
-          </TableRow>
+              <Skeleton className="h-4 w-36" />
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+            </div>
+          </div>
         ))}
-      </TableBody>
-    </Table>
+      </div>
+    </>
   )
 }
 
@@ -123,7 +145,7 @@ function ProjectDetailSkeleton() {
           </CardTitle>
         </CardHeader>
         <CardContent className="p-5 pt-0">
-          <DocumentsTableSkeleton />
+          <DocumentsListSkeleton />
         </CardContent>
       </Card>
     </div>
@@ -289,7 +311,7 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
   }
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 lg:px-8">
+    <div className={PAGE_CONTAINER_CLASS}>
       <div className="mb-4 flex items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold text-slate-900">项目详情</h1>
         <div className="flex items-center gap-2">
@@ -357,7 +379,7 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
             <CardContent className="p-5 pt-0">
               {documentsError ? <p className="mb-3 text-sm text-red-600">{documentsError}</p> : null}
               {documentsLoading ? (
-                <DocumentsTableSkeleton />
+                <DocumentsListSkeleton />
               ) : documents.length === 0 ? (
                 <Empty className="rounded-2xl border border-dashed border-slate-300 bg-slate-50">
                   <EmptyHeader>
@@ -373,63 +395,118 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
                   </EmptyContent>
                 </Empty>
               ) : (
-                <Table className="min-w-[960px]">
-                  <TableHeader>
-                    <TableRow className="hover:bg-transparent">
-                      <TableHead>文档名称</TableHead>
-                      <TableHead>软件 ID</TableHead>
-                      <TableHead>描述</TableHead>
-                      <TableHead>创建时间</TableHead>
-                      <TableHead>更新时间</TableHead>
-                      <TableHead>操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
+                <>
+                  <div className="hidden md:block">
+                    <Table className="table-fixed">
+                      <TableHeader>
+                        <TableRow className="hover:bg-transparent">
+                          <TableHead className="w-[46%]">文档</TableHead>
+                          <TableHead className="w-[18%]">软件</TableHead>
+                          <TableHead className="w-[20%]">时间</TableHead>
+                          <TableHead className="w-[16%] text-right">操作</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {documents.map((item) => {
+                          const detailHref = `/projects/${params.projectId}/documents/${item.id}`
+
+                          return (
+                            <TableRow key={item.id}>
+                              <TableCell className="align-top whitespace-normal">
+                                <div className="space-y-1 pr-4">
+                                  <Link href={detailHref} className="font-medium text-slate-900 underline-offset-4 hover:text-sky-700 hover:underline">
+                                    {item.name || "--"}
+                                  </Link>
+                                  <p className="text-sm break-words text-slate-500">{item.description || "--"}</p>
+                                </div>
+                              </TableCell>
+                              <TableCell className="align-top text-slate-600">
+                                <p className="truncate" title={item.software_id ?? "--"}>
+                                  {item.software_id ?? "--"}
+                                </p>
+                              </TableCell>
+                              <TableCell className="align-top whitespace-normal text-slate-600">
+                                <div className="space-y-1">
+                                  <p className="text-sm font-medium text-slate-900">更新于 {formatDate(item.updated_at)}</p>
+                                  <p className="text-xs text-slate-500">创建于 {formatDate(item.created_at)}</p>
+                                </div>
+                              </TableCell>
+                              <TableCell className="align-top">
+                                <div className="flex flex-col items-stretch gap-2 lg:items-end">
+                                  <Button asChild size="sm" variant="outline">
+                                    <a href={`${apiBase}/documents/${item.id}/download`} target="_blank" rel="noreferrer">
+                                      下载
+                                    </a>
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="destructive"
+                                    onClick={() => {
+                                      setDeleteDocumentError("")
+                                      setDocumentToDelete(item)
+                                    }}
+                                  >
+                                    删除
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          )
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+
+                  <div className="grid gap-3 md:hidden">
                     {documents.map((item) => {
                       const detailHref = `/projects/${params.projectId}/documents/${item.id}`
 
                       return (
-                        <TableRow key={item.id}>
-                          <TableCell className="max-w-[260px] whitespace-normal break-words font-medium text-slate-900">
-                            <Link href={detailHref} className="hover:underline">
+                        <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 shadow-sm">
+                          <div className="space-y-2">
+                            <Link href={detailHref} className="block font-medium text-slate-900 underline-offset-4 hover:text-sky-700 hover:underline">
                               {item.name || "--"}
                             </Link>
-                          </TableCell>
-                          <TableCell className="max-w-[220px] whitespace-normal break-all text-slate-600">
-                            {item.software_id ?? "--"}
-                          </TableCell>
-                          <TableCell className="max-w-[320px] whitespace-normal break-words text-slate-600">
-                            {item.description || "--"}
-                          </TableCell>
-                          <TableCell>{formatDate(item.created_at)}</TableCell>
-                          <TableCell>{formatDate(item.updated_at)}</TableCell>
-                          <TableCell>
-                            <div className="flex flex-wrap gap-2">
-                              <Button asChild size="sm" variant="secondary">
-                                <Link href={detailHref}>查看详情</Link>
-                              </Button>
-                              <Button asChild size="sm" variant="outline">
-                                <a href={`${apiBase}/documents/${item.id}/download`} target="_blank" rel="noreferrer">
-                                  下载
-                                </a>
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="destructive"
-                                onClick={() => {
-                                  setDeleteDocumentError("")
-                                  setDocumentToDelete(item)
-                                }}
-                              >
-                                删除
-                              </Button>
+                            <p className="text-sm break-words text-slate-500">{item.description || "--"}</p>
+                          </div>
+
+                          <div className="mt-4 grid gap-3 text-sm">
+                            <div>
+                              <p className="text-xs uppercase tracking-[0.08em] text-slate-400">软件</p>
+                              <p className="mt-1 truncate text-slate-700" title={item.software_id ?? "--"}>
+                                {item.software_id ?? "--"}
+                              </p>
                             </div>
-                          </TableCell>
-                        </TableRow>
+                            <div>
+                              <p className="text-xs uppercase tracking-[0.08em] text-slate-400">时间</p>
+                              <p className="mt-1 text-slate-900">更新于 {formatDate(item.updated_at)}</p>
+                              <p className="mt-1 text-xs text-slate-500">创建于 {formatDate(item.created_at)}</p>
+                            </div>
+                          </div>
+
+                          <div className="mt-4 grid grid-cols-2 gap-2">
+                            <Button className="w-auto" asChild size="sm" variant="outline">
+                              <a href={`${apiBase}/documents/${item.id}/download`} target="_blank" rel="noreferrer">
+                                下载
+                              </a>
+                            </Button>
+                            <Button
+                              className="w-auto"
+                              size="sm"
+                              variant="destructive"
+                              onClick={() => {
+                                setDeleteDocumentError("")
+                                setDocumentToDelete(item)
+                              }}
+                            >
+                              删除
+                            </Button>
+                          </div>
+                        </div>
                       )
                     })}
-                  </TableBody>
-                </Table>
+                  </div>
+                </>
               )}
             </CardContent>
           </Card>

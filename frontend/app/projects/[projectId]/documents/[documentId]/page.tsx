@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
 import { ApiDocument, fetchDocument, formatDate, getApiBaseUrl, updateDocument } from "@/lib/documents"
+import { PAGE_CONTAINER_CLASS } from "@/lib/layout"
 
 function DocumentDetailSkeleton() {
   return (
@@ -147,7 +148,7 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
   }
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 lg:px-8">
+    <div className={PAGE_CONTAINER_CLASS}>
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-slate-900">文档详情</h1>
@@ -250,4 +251,6 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
     </div>
   )
 }
+
+
 

@@ -1,7 +1,7 @@
-"use client"
+﻿"use client"
 
-import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
+import { useEffect, useMemo, useState } from "react"
 import { FolderOpen, Search } from "lucide-react"
 import { toast } from "sonner"
 
@@ -23,6 +23,7 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { PAGE_CONTAINER_CLASS } from "@/lib/layout"
 
 type ApiProjectStatus = "draft" | "analyzing" | "completed" | "archived"
 type ProjectStatus = ApiProjectStatus | "parsing" | "pending_confirm" | "done"
@@ -75,7 +76,7 @@ const MOCK_PROJECTS: ProjectItem[] = [
   {
     id: "p-1003",
     name: "实验室资产追踪系统",
-    description: "资产流转、报修流程与审计追溯",
+    description: "资产流转、报修流程与审计追踪",
     status: "done",
     version: "V2.0",
     fp: 98,
@@ -136,23 +137,23 @@ function mapApiProjectToItem(project: ApiProject): ProjectItem {
 
 async function fetchProjectsFromBackend(signal: AbortSignal): Promise<ProjectItem[]> {
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
-  const res = await fetch(`${apiBase}/projects`, {
+  const response = await fetch(`${apiBase}/projects`, {
     method: "GET",
     signal,
     headers: { Accept: "application/json" },
   })
 
-  if (!res.ok) {
-    throw new Error(`鑾峰彇椤圭洰鍒楄〃澶辫触锛?{res.status}`)
+  if (!response.ok) {
+    throw new Error(`加载项目列表失败（HTTP ${response.status}）`)
   }
 
-  const data = (await res.json()) as ApiProject[]
+  const data = (await response.json()) as ApiProject[]
   return Array.isArray(data) ? data.map(mapApiProjectToItem) : []
 }
 
 async function createProjectOnBackend(payload: { name: string; description: string }): Promise<ProjectItem> {
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
-  const res = await fetch(`${apiBase}/projects`, {
+  const response = await fetch(`${apiBase}/projects`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -161,22 +162,22 @@ async function createProjectOnBackend(payload: { name: string; description: stri
     body: JSON.stringify(payload),
   })
 
-  if (!res.ok) {
-    throw new Error(`鍒涘缓椤圭洰澶辫触锛?{res.status}`)
+  if (!response.ok) {
+    throw new Error(`创建项目失败（HTTP ${response.status}）`)
   }
 
-  const data = (await res.json()) as ApiProject
+  const data = (await response.json()) as ApiProject
   return mapApiProjectToItem(data)
 }
 
 async function deleteProjectOnBackend(projectId: string): Promise<void> {
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
-  const res = await fetch(`${apiBase}/projects/${projectId}`, {
+  const response = await fetch(`${apiBase}/projects/${projectId}`, {
     method: "DELETE",
   })
 
-  if (!res.ok) {
-    throw new Error(`鍒犻櫎椤圭洰澶辫触锛?{res.status}`)
+  if (!response.ok) {
+    throw new Error(`删除项目失败（HTTP ${response.status}）`)
   }
 }
 
@@ -289,7 +290,7 @@ export default function HomePage() {
       setProjects((prev) => [created, ...prev])
       setUsingMockData(false)
       toast.success("创建成功", {
-        description: `项目「${created.name}」已创建。`,
+        description: `项目“${created.name}”已创建。`,
       })
     } catch (createProjectError) {
       const errorMessage = createProjectError instanceof Error ? createProjectError.message : "创建项目失败。"
@@ -315,7 +316,7 @@ export default function HomePage() {
       setProjects((prev) => prev.filter((item) => item.id !== targetProject.id))
       setProjectToDelete(null)
       toast.success("删除成功", {
-        description: `项目「${targetProject.name}」已删除。`,
+        description: `项目“${targetProject.name}”已删除。`,
       })
     } catch (deleteProjectError) {
       const errorMessage = deleteProjectError instanceof Error ? deleteProjectError.message : "删除项目失败。"
@@ -329,8 +330,7 @@ export default function HomePage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-
+    <div className={PAGE_CONTAINER_CLASS}>
       <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm backdrop-blur sm:p-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <div className="text-sm font-extrabold tracking-[0.1em] text-slate-700">SOFTPLAN</div>
@@ -339,7 +339,7 @@ export default function HomePage() {
             <Input
               type="search"
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(event) => setQuery(event.target.value)}
               placeholder="按项目名称或描述搜索"
               className="pl-9"
               aria-label="全局搜索"
@@ -377,6 +377,7 @@ export default function HomePage() {
             </CardContent>
           </Card>
         </section>
+
         {isProjectsLoading ? (
           <ProjectsTableSkeleton />
         ) : hasProjects ? (
@@ -480,7 +481,7 @@ export default function HomePage() {
           <AlertDialogHeader>
             <AlertDialogTitle>确认删除项目</AlertDialogTitle>
             <AlertDialogDescription>
-              {projectToDelete ? `确定要删除「${projectToDelete.name}」吗？该操作不可恢复。` : "确定要删除该项目吗？"}
+              {projectToDelete ? `确定要删除“${projectToDelete.name}”吗？该操作不可恢复。` : "确定要删除该项目吗？"}
             </AlertDialogDescription>
             {deleteError ? <AlertDialogDescription className="text-destructive">{deleteError}</AlertDialogDescription> : null}
           </AlertDialogHeader>
