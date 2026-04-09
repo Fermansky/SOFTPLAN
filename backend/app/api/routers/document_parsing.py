@@ -1,4 +1,15 @@
-﻿import logging
+"""文档解析路由。
+
+职责：
+1. 提供文档解析任务的可用性检查、创建、查询和结果读取接口。
+2. 将布局任务、图片项和语义结果聚合成 API 可读视图。
+
+说明：
+- 仅支持绑定 PDF 文件的文档发起解析。
+- 任务创建遵循服务层的去重复用规则。
+"""
+
+import logging
 from datetime import datetime
 from enum import Enum
 from uuid import UUID
@@ -42,6 +53,8 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentParsingAvailabilityRead(BaseModel):
+    """文档解析下游服务可用性响应。"""
+
     available: bool
     service: str
     health_path: str | None = None
@@ -49,6 +62,8 @@ class DocumentParsingAvailabilityRead(BaseModel):
 
 
 class DocumentParsingImageAnalysisStatus(str, Enum):
+    """文档解析中图片语义分析阶段的聚合状态。"""
+
     pending = "pending"
     running = "running"
     succeeded = "succeeded"
@@ -56,6 +71,8 @@ class DocumentParsingImageAnalysisStatus(str, Enum):
 
 
 class DocumentParsingTaskCreateRequest(BaseModel):
+    """创建文档解析任务的请求体。"""
+
     document_id: UUID
     layout_model: str | None = None
     image_model: str | None = None
@@ -63,6 +80,8 @@ class DocumentParsingTaskCreateRequest(BaseModel):
 
 
 class DocumentParsingImageSemanticRead(BaseModel):
+    """单张图片语义结果的读取视图。"""
+
     description: str
     result_model: str | None = None
     source_task_id: UUID | None = None
@@ -70,6 +89,8 @@ class DocumentParsingImageSemanticRead(BaseModel):
 
 
 class DocumentParsingImageItemRead(BaseModel):
+    """文档解析中的图片项读取视图。"""
+
     id: int
     source_key: str
     file_hash: str
@@ -84,6 +105,8 @@ class DocumentParsingImageItemRead(BaseModel):
 
 
 class DocumentParsingTaskRead(BaseModel):
+    """文档解析任务详情视图。"""
+
     id: UUID
     document_id: UUID
     file_id: UUID
@@ -115,6 +138,8 @@ class DocumentParsingTaskRead(BaseModel):
 
 
 class DocumentParsingDocumentResultStatus(str, Enum):
+    """按文档读取文档解析结果时的聚合状态。"""
+
     no_task = "no_task"
     pending = "pending"
     running = "running"
@@ -123,6 +148,8 @@ class DocumentParsingDocumentResultStatus(str, Enum):
 
 
 class DocumentParsingDocumentResultRead(BaseModel):
+    """按文档聚合读取文档解析结果的响应视图。"""
+
     document_id: UUID
     file_id: UUID
     status: DocumentParsingDocumentResultStatus
@@ -151,8 +178,14 @@ class DocumentParsingDocumentResultRead(BaseModel):
     updated_at: datetime | None = None
 
 
-
 def _resolve_pdf_file_record(document_id: UUID, session: Session) -> tuple[UUID, FileRecord]:
+    """解析文档对应的 PDF 文件记录。
+
+    失败语义：
+    - 文档不存在或未绑定文件时返回 404。
+    - 文件扩展名不是 PDF 时返回 422。
+    """
+
     document = get_active_document_or_404(document_id, session)
     if document.file_id is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document file not found")
@@ -164,10 +197,11 @@ def _resolve_pdf_file_record(document_id: UUID, session: Session) -> tuple[UUID,
     return document.id, file_record
 
 
-
 def _to_image_semantic_read(
     semantic: DocumentParsingImageSemanticResult | None,
 ) -> DocumentParsingImageSemanticRead | None:
+    """把图片语义结果转换为 API 读取视图。"""
+
     if semantic is None:
         return None
     return DocumentParsingImageSemanticRead(
@@ -183,6 +217,8 @@ def _to_image_item_read(
     *,
     semantic: DocumentParsingImageSemanticResult | None = None,
 ) -> DocumentParsingImageItemRead:
+    """把文档解析图片项转换为 API 读取视图。"""
+
     return DocumentParsingImageItemRead(
         id=item.id or 0,
         source_key=item.source_key,
@@ -198,12 +234,13 @@ def _to_image_item_read(
     )
 
 
-
 def _get_image_analysis_status(
     task: DocumentParsingTask,
     *,
     layout_task: LayoutAnalysisTask | None,
 ) -> DocumentParsingImageAnalysisStatus:
+    """根据布局任务和图片统计推导图片分析阶段状态。"""
+
     if layout_task is None:
         return DocumentParsingImageAnalysisStatus.failed if task.status == DocumentParsingTaskStatus.failed else DocumentParsingImageAnalysisStatus.pending
     if layout_task.status == LayoutAnalysisTaskStatus.failed:
@@ -219,13 +256,18 @@ def _get_image_analysis_status(
     return DocumentParsingImageAnalysisStatus.running
 
 
-
 def _to_document_parsing_task_read(
     session: Session,
     task: DocumentParsingTask,
     *,
     reused: bool = False,
 ) -> DocumentParsingTaskRead:
+    """把文档解析任务及其关联结果转换为 API 读取视图。
+
+    副作用：
+    - 额外查询布局任务、图片项和图片语义结果。
+    """
+
     layout_task = get_layout_task_for_document_parsing_task(session, task=task)
     image_items = get_document_parsing_image_items(session, task_id=task.id)
     image_item_reads = [
@@ -277,6 +319,8 @@ def _to_document_parsing_task_read(
 def get_document_parsing_availability(
     client: FileConvertServiceClient = Depends(get_file_convert_service_client),
 ) -> DocumentParsingAvailabilityRead:
+    """返回 file-convert-service 的可用性探针结果。"""
+
     available, error = client.check_availability()
     if available:
         return DocumentParsingAvailabilityRead(available=True, service="file-convert-service", health_path="/health")
@@ -293,6 +337,20 @@ def create_document_parsing_task(
     payload: DocumentParsingTaskCreateRequest,
     session: Session = Depends(get_session),
 ) -> DocumentParsingTaskRead:
+    """为文档创建或复用文档解析任务。
+
+    约束：
+    - 仅支持 PDF 文档。
+
+    副作用：
+    - 调用服务层提交或复用文档解析任务。
+    - 失败时可能回滚事务。
+
+    失败语义：
+    - 不支持的布局模型返回 422。
+    - 并发冲突返回 409。
+    """
+
     document_id, file_record = _resolve_pdf_file_record(payload.document_id, session)
 
     try:
@@ -338,6 +396,8 @@ def create_document_parsing_task(
 
 @router.get("/tasks/{task_id}", response_model=DocumentParsingTaskRead)
 def get_document_parsing_task(task_id: UUID, session: Session = Depends(get_session)) -> DocumentParsingTaskRead:
+    """返回单个文档解析任务详情，未命中时返回 404。"""
+
     task = get_document_parsing_task_by_id(session, task_id=task_id)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document parsing task not found")
@@ -349,6 +409,13 @@ def get_document_parsing_document_result(
     document_id: UUID,
     session: Session = Depends(get_session),
 ) -> DocumentParsingDocumentResultRead:
+    """返回文档最近一次成功文档解析结果的聚合视图。
+
+    返回语义：
+    - 若尚无成功任务，返回 `no_task`。
+    - 图片项与 markdown 仅来自最近一次成功任务。
+    """
+
     resolved_document_id, file_record = _resolve_pdf_file_record(document_id, session)
 
     task = get_latest_succeeded_document_parsing_task_for_document_file(

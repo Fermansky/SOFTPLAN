@@ -1,4 +1,14 @@
-"""LLM API routes and configuration management."""
+"""LLM 路由与配置管理。
+
+职责：
+1. 提供 LLM 配置的查询、创建、更新、激活与删除接口。
+2. 提供 LLM 可用性探针和对话转发接口。
+3. 负责把抽取图片转换为对话输入片段。
+
+说明：
+- 对话接口会访问对象存储读取图片内容，并转成 data URL。
+- 配置相关异常会统一映射为 HTTP 错误。
+"""
 
 import base64
 import logging
@@ -43,6 +53,8 @@ _MAX_EXTRACTED_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 class LlmAvailabilityRead(BaseModel):
+    """LLM 模块可用性探针响应。"""
+
     available: bool
     service: str
     health_path: str | None = None
@@ -50,6 +62,8 @@ class LlmAvailabilityRead(BaseModel):
 
 
 class LlmChatRequest(BaseModel):
+    """LLM 对话请求体。"""
+
     prompt: str = Field(min_length=1)
     system_prompt: str | None = None
     model: str | None = None
@@ -61,20 +75,25 @@ class LlmChatRequest(BaseModel):
 
 
 class LlmUsageRead(BaseModel):
+    """LLM token 使用量视图。"""
+
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
 
 
 class LlmChatRead(BaseModel):
+    """LLM 对话响应视图。"""
+
     text: str
     model: str
     usage: LlmUsageRead
     request_id: str | None = None
 
 
-
 def _raise_llm_config_http_error(exc: Exception) -> None:
+    """把 LLM 配置相关异常映射为 HTTP 错误。"""
+
     if isinstance(exc, LlmConfigNotFoundError):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     if isinstance(exc, LlmConfigDisabledError):
@@ -90,6 +109,13 @@ def _raise_llm_config_http_error(exc: Exception) -> None:
 
 @router.get("/configs/active", response_model=LlmConfigRead)
 def get_active_llm_config_route(session: Session = Depends(get_session)) -> LlmConfigRead:
+    """返回当前激活且启用的 LLM 配置。
+
+    失败语义：
+    - 没有激活配置时返回 503。
+    - 激活配置被禁用时返回 409。
+    """
+
     config = get_active_llm_config(session)
     if config is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="No active LLM config is configured")
@@ -100,11 +126,15 @@ def get_active_llm_config_route(session: Session = Depends(get_session)) -> LlmC
 
 @router.get("/configs", response_model=list[LlmConfigListItem])
 def list_llm_configs_route(session: Session = Depends(get_session)) -> list[LlmConfigListItem]:
+    """返回 LLM 配置列表。"""
+
     return [serialize_llm_config_list_item(config) for config in list_llm_configs(session)]
 
 
 @router.post("/configs", response_model=LlmConfigRead, status_code=status.HTTP_201_CREATED)
 def create_llm_config_route(payload: LlmConfigCreate, session: Session = Depends(get_session)) -> LlmConfigRead:
+    """创建 LLM 配置，并将服务层异常映射为 HTTP 错误。"""
+
     try:
         config = create_llm_config(session, payload)
     except Exception as exc:
@@ -114,6 +144,8 @@ def create_llm_config_route(payload: LlmConfigCreate, session: Session = Depends
 
 @router.get("/configs/{config_id}", response_model=LlmConfigRead)
 def get_llm_config_route(config_id: UUID, session: Session = Depends(get_session)) -> LlmConfigRead:
+    """返回单个 LLM 配置详情。"""
+
     try:
         config = get_llm_config_or_raise(session, config_id)
     except Exception as exc:
@@ -127,6 +159,8 @@ def update_llm_config_route(
     payload: LlmConfigUpdate,
     session: Session = Depends(get_session),
 ) -> LlmConfigRead:
+    """更新 LLM 配置并返回最新结果。"""
+
     try:
         config = update_llm_config(session, config_id, payload)
     except Exception as exc:
@@ -136,6 +170,8 @@ def update_llm_config_route(
 
 @router.post("/configs/{config_id}/activate", response_model=LlmConfigRead)
 def activate_llm_config_route(config_id: UUID, session: Session = Depends(get_session)) -> LlmConfigRead:
+    """激活指定 LLM 配置。"""
+
     try:
         config = activate_llm_config(session, config_id)
     except Exception as exc:
@@ -145,6 +181,8 @@ def activate_llm_config_route(config_id: UUID, session: Session = Depends(get_se
 
 @router.delete("/configs/{config_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_llm_config_route(config_id: UUID, session: Session = Depends(get_session)) -> Response:
+    """删除指定 LLM 配置。"""
+
     try:
         delete_llm_config(session, config_id)
     except Exception as exc:
@@ -157,6 +195,8 @@ def get_llm_availability(
     config_id: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
 ) -> LlmAvailabilityRead:
+    """返回 LLM 模块可用性探针结果。"""
+
     try:
         client = get_llm_service_client(config_id=config_id, session=session)
     except Exception as exc:
@@ -185,11 +225,11 @@ def get_llm_availability(
     )
 
 
-
 def _to_data_url(payload: bytes, *, content_type: str) -> str:
+    """把二进制图片内容编码为 data URL。"""
+
     encoded = base64.b64encode(payload).decode("ascii")
     return f"data:{content_type};base64,{encoded}"
-
 
 
 def _build_extracted_image_input_parts(
@@ -198,6 +238,20 @@ def _build_extracted_image_input_parts(
     session: Session,
     storage: MinioStorage,
 ) -> list[LlmImageUrlInputPart]:
+    """把抽取图片列表转换为 LLM 图片输入片段。
+
+    约束：
+    - 单次请求最多携带固定数量图片。
+    - 每张资源必须是图片类型，且大小不得超过上限。
+
+    副作用：
+    - 访问对象存储下载图片内容。
+
+    失败语义：
+    - 输入不合法时返回 422。
+    - 存储下载失败时返回 502。
+    """
+
     if len(extracted_image_ids) > _MAX_EXTRACTED_IMAGES_PER_CHAT:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -251,6 +305,19 @@ def chat(
     session: Session = Depends(get_session),
     storage: MinioStorage = Depends(get_minio_storage),
 ) -> LlmChatRead:
+    """把对话请求转发给嵌入式 LLM 模块。
+
+    副作用：
+    - 解析配置并调用下游 LLM 客户端。
+    - 若附带图片，则访问对象存储下载图片内容。
+
+    失败语义：
+    - prompt 为空时返回 422。
+    - 配置解析异常映射为 404/409/422/503。
+    - 存储读取失败或下游聊天失败时返回 502。
+    - 调用记录持久化失败时返回 500。
+    """
+
     prompt = payload.prompt.strip()
     if not prompt:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="prompt is required")

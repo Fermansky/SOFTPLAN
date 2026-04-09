@@ -1,4 +1,17 @@
-﻿from datetime import datetime
+"""文档解析任务模型。
+
+职责：
+1. 描述文档解析任务的持久化结构、状态与结果摘要。
+2. 关联布局分析任务，并记录图片语义处理的统计信息。
+
+说明：
+- 活动任务以 `document_id + layout_model_key + image_model_key` 去重，
+  仅允许 `pending` / `running` 状态各保留一条活动记录。
+- `requested_*` 保留调用方原始请求，`target_*` 与 `*_model_key`
+  表示实际执行与去重使用的模型标识。
+"""
+
+from datetime import datetime
 from enum import Enum
 from uuid import UUID, uuid4
 
@@ -14,6 +27,11 @@ DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY = "__LLM_SERVICE_DEFAULT__"
 
 
 class DocumentParsingTaskStatus(str, Enum):
+    """文档解析任务状态。
+
+    表示任务从等待处理到执行结束的生命周期。
+    """
+
     pending = "pending"
     running = "running"
     succeeded = "succeeded"
@@ -21,6 +39,11 @@ class DocumentParsingTaskStatus(str, Enum):
 
 
 class DocumentParsingTaskBase(SQLModel):
+    """文档解析任务共享字段。
+
+    包含任务输入、模型选择、结果汇总和错误信息，供表模型与读取模型复用。
+    """
+
     document_id: UUID
     file_id: UUID
     storage_bucket: str
@@ -44,6 +67,12 @@ class DocumentParsingTaskBase(SQLModel):
 
 
 class DocumentParsingTask(DocumentParsingTaskBase, table=True):
+    """文档解析任务持久化实体。
+
+    该表负责串联文档、布局分析任务和图片语义处理结果。`started_at`
+    与 `finished_at` 仅描述执行窗口，不额外表达调度重试策略。
+    """
+
     __tablename__ = "document_parsing_tasks"
 
     __table_args__ = (
@@ -104,6 +133,11 @@ class DocumentParsingTask(DocumentParsingTaskBase, table=True):
 
 
 class DocumentParsingTaskCreate(SQLModel):
+    """创建文档解析任务时使用的输入模型。
+
+    仅包含提交任务所需的静态信息，不包含运行态统计字段。
+    """
+
     document_id: UUID
     file_id: UUID
     storage_bucket: str
@@ -119,6 +153,8 @@ class DocumentParsingTaskCreate(SQLModel):
 
 
 class DocumentParsingTaskRead(DocumentParsingTaskBase):
+    """对外返回的文档解析任务读取模型。"""
+
     id: UUID
     created_at: datetime
     started_at: datetime | None = None

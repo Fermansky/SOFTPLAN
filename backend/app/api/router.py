@@ -1,4 +1,12 @@
-﻿"""backend 顶层 API 路由聚合。"""
+"""backend 顶层 API 路由聚合。
+
+职责：
+1. 汇总各资源路由并挂载到统一 API Router。
+2. 维持路由注册顺序与公开入口的一致性。
+
+说明：
+- 该模块只负责聚合，不处理请求编排或依赖注入。
+"""
 
 from fastapi import APIRouter
 

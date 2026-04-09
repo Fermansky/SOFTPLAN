@@ -1,3 +1,15 @@
+"""抽取图片语义任务模型。
+
+职责：
+1. 描述单张抽取图片的语义分析任务。
+2. 记录模型选择、提示词版本、结果与失败信息。
+
+说明：
+- 活动任务按 `extracted_image_id + target_model_key + overwrite_existing_snapshot`
+  去重，避免同一图片重复提交并发语义分析。
+- 任务完成后是否覆盖快照由 `overwrite_existing_snapshot` 与上层服务决定。
+"""
+
 from datetime import datetime
 from enum import Enum
 from uuid import UUID, uuid4
@@ -9,6 +21,8 @@ from .common import utc_now
 
 
 class ExtractedImageSemanticTaskStatus(str, Enum):
+    """抽取图片语义任务状态。"""
+
     pending = "pending"
     running = "running"
     succeeded = "succeeded"
@@ -16,6 +30,8 @@ class ExtractedImageSemanticTaskStatus(str, Enum):
 
 
 class ExtractedImageSemanticTaskBase(SQLModel):
+    """抽取图片语义任务共享字段。"""
+
     extracted_image_id: int
     status: ExtractedImageSemanticTaskStatus = ExtractedImageSemanticTaskStatus.pending
     requested_model: str | None = None
@@ -32,6 +48,12 @@ class ExtractedImageSemanticTaskBase(SQLModel):
 
 
 class ExtractedImageSemanticTask(ExtractedImageSemanticTaskBase, table=True):
+    """抽取图片语义任务持久化实体。
+
+    该模型保留调用侧请求模型、实际执行模型和提示词指纹，便于结果追踪、
+    去重复用以及问题排查。
+    """
+
     __tablename__ = "extracted_image_semantic_tasks"
 
     __table_args__ = (
@@ -74,6 +96,8 @@ class ExtractedImageSemanticTask(ExtractedImageSemanticTaskBase, table=True):
 
 
 class ExtractedImageSemanticTaskRead(ExtractedImageSemanticTaskBase):
+    """对外返回的抽取图片语义任务读取模型。"""
+
     id: UUID
     created_at: datetime
     started_at: datetime | None = None

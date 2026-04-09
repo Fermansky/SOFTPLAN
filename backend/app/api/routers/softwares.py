@@ -1,3 +1,13 @@
+"""软件路由。
+
+职责：
+1. 提供软件实体的创建、列表、详情、更新与逻辑删除接口。
+2. 对外隐藏已软删除软件。
+
+说明：
+- 软件以 `code` 作为唯一业务标识。
+"""
+
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -14,6 +24,12 @@ router = APIRouter(prefix="/softwares", tags=["softwares"])
 
 @router.post("", response_model=SoftwareRead, status_code=status.HTTP_201_CREATED)
 def create_software(payload: SoftwareCreate, session: Session = Depends(get_session)) -> Software:
+    """创建软件记录。
+
+    失败语义：
+    - 当 `code` 冲突时返回 409。
+    """
+
     software = Software(**payload.model_dump())
     session.add(software)
     try:
@@ -33,6 +49,8 @@ def list_softwares(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[Software]:
+    """分页返回未软删除软件列表。"""
+
     statement = (
         select(Software)
         .where(Software.deleted_at.is_(None))
@@ -45,6 +63,8 @@ def list_softwares(
 
 @router.get("/{software_id}", response_model=SoftwareRead)
 def get_software(software_id: UUID, session: Session = Depends(get_session)) -> Software:
+    """返回单个未软删除软件详情，未命中时返回 404。"""
+
     return get_software_or_404(software_id, session)
 
 
@@ -52,6 +72,12 @@ def get_software(software_id: UUID, session: Session = Depends(get_session)) -> 
 def update_software(
     software_id: UUID, payload: SoftwareUpdate, session: Session = Depends(get_session)
 ) -> Software:
+    """更新软件的已提交字段。
+
+    失败语义：
+    - 当更新后的 `code` 冲突时返回 409。
+    """
+
     software = get_software_or_404(software_id, session)
     update_data = payload.model_dump(exclude_unset=True)
     for field_name, value in update_data.items():
@@ -72,6 +98,12 @@ def update_software(
 
 @router.delete("/{software_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_software(software_id: UUID, session: Session = Depends(get_session)) -> Response:
+    """逻辑删除软件。
+
+    副作用：
+    - 设置 `deleted_at` 与 `updated_at` 并提交事务。
+    """
+
     software = get_software_or_404(software_id, session)
     now = utc_now()
     software.deleted_at = now

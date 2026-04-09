@@ -1,4 +1,15 @@
-﻿import logging
+"""布局分析路由。
+
+职责：
+1. 提供布局分析任务的创建、查询与文档结果读取接口。
+2. 将任务实体转换为 API 可读视图。
+
+说明：
+- 仅支持带 PDF 文件的文档发起布局分析。
+- 任务创建会复用服务层定义的去重逻辑。
+"""
+
+import logging
 from datetime import datetime
 from enum import Enum
 from uuid import UUID
@@ -24,12 +35,16 @@ logger = logging.getLogger(__name__)
 
 
 class LayoutAnalysisTaskCreateRequest(BaseModel):
+    """创建布局分析任务的请求体。"""
+
     document_id: UUID
     layout_model: str | None = None
     force_layout_analysis: bool = False
 
 
 class LayoutAnalysisTaskRead(BaseModel):
+    """布局分析任务读取视图。"""
+
     id: UUID
     document_id: UUID
     file_id: UUID
@@ -54,6 +69,8 @@ class LayoutAnalysisTaskRead(BaseModel):
 
 
 class LayoutAnalysisDocumentResultStatus(str, Enum):
+    """文档布局分析结果状态。"""
+
     no_task = "no_task"
     pending = "pending"
     running = "running"
@@ -62,6 +79,8 @@ class LayoutAnalysisDocumentResultStatus(str, Enum):
 
 
 class LayoutAnalysisDocumentResultRead(BaseModel):
+    """按文档读取布局分析聚合结果的响应视图。"""
+
     document_id: UUID
     file_id: UUID
     status: LayoutAnalysisDocumentResultStatus
@@ -82,8 +101,14 @@ class LayoutAnalysisDocumentResultRead(BaseModel):
     updated_at: datetime | None = None
 
 
-
 def _resolve_pdf_file_record(document_id: UUID, session: Session) -> tuple[UUID, FileRecord]:
+    """解析文档对应的 PDF 文件记录。
+
+    失败语义：
+    - 文档不存在或未绑定文件时返回 404。
+    - 文件扩展名不是 PDF 时返回 422。
+    """
+
     document = get_active_document_or_404(document_id, session)
     if document.file_id is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document file not found")
@@ -95,13 +120,15 @@ def _resolve_pdf_file_record(document_id: UUID, session: Session) -> tuple[UUID,
     return document.id, file_record
 
 
-
 def _is_layout_result_reused(task: LayoutAnalysisTask) -> bool:
+    """判断布局结果是否来自历史任务复用。"""
+
     return task.layout_result_source_task_id is not None
 
 
-
 def _to_task_read(task: LayoutAnalysisTask, *, reused: bool = False) -> LayoutAnalysisTaskRead:
+    """把布局分析任务实体转换为 API 读取视图。"""
+
     return LayoutAnalysisTaskRead(
         id=task.id,
         document_id=task.document_id,
@@ -132,6 +159,20 @@ def create_layout_analysis_task(
     payload: LayoutAnalysisTaskCreateRequest,
     session: Session = Depends(get_session),
 ) -> LayoutAnalysisTaskRead:
+    """为文档创建或复用布局分析任务。
+
+    约束：
+    - 仅支持 PDF 文档。
+
+    副作用：
+    - 调用服务层提交或复用任务。
+    - 失败时可能回滚当前事务。
+
+    失败语义：
+    - 不支持的布局模型返回 422。
+    - 并发冲突返回 409。
+    """
+
     document_id, file_record = _resolve_pdf_file_record(payload.document_id, session)
 
     try:
@@ -175,6 +216,8 @@ def create_layout_analysis_task(
 
 @router.get("/tasks/{task_id}", response_model=LayoutAnalysisTaskRead)
 def get_layout_analysis_task(task_id: UUID, session: Session = Depends(get_session)) -> LayoutAnalysisTaskRead:
+    """返回单个布局分析任务详情，未命中时返回 404。"""
+
     task = get_layout_analysis_task_by_id(session, task_id=task_id)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="layout analysis task not found")
@@ -186,6 +229,16 @@ def get_layout_analysis_document_result(
     document_id: UUID,
     session: Session = Depends(get_session),
 ) -> LayoutAnalysisDocumentResultRead:
+    """返回文档最近一次布局分析结果聚合视图。
+
+    约束：
+    - 仅支持 PDF 文档。
+
+    返回语义：
+    - 若尚无任务，返回 `no_task` 状态。
+    - 仅在成功任务时返回 markdown 与图片哈希结果。
+    """
+
     resolved_document_id, file_record = _resolve_pdf_file_record(document_id, session)
 
     task = get_latest_layout_analysis_task_for_document_file(

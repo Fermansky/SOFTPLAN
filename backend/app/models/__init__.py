@@ -1,3 +1,13 @@
+"""模型层聚合导出。
+
+职责：
+1. 统一暴露 `backend.app.models` 下常用模型、枚举与常量。
+2. 作为数据库初始化与其他模块导入的稳定入口。
+
+说明：
+- 该模块只做导出聚合，不扩展模型业务语义。
+"""
+
 from .document import Document, DocumentCreate, DocumentRead, DocumentUpdate
 from .document_parsing_image_item import (
     DocumentParsingImageItem,
@@ -96,4 +106,3 @@ __all__ = [
     "SoftwareRead",
     "SoftwareUpdate",
 ]
-

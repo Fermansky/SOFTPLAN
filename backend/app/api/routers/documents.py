@@ -1,3 +1,14 @@
+"""文档路由。
+
+职责：
+1. 提供文档的上传、创建、列表、详情、下载、更新与逻辑删除接口。
+2. 处理文档与项目、软件、文件记录之间的基础关联校验。
+
+说明：
+- 下载接口会访问对象存储读取文件内容。
+- 删除操作仅做软删除，不清理对象存储文件。
+"""
+
 import logging
 from urllib.parse import quote
 from uuid import UUID
@@ -25,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 
 def _build_download_filename(name: str, extension: str) -> str:
+    """根据文档名称和扩展名构造下载文件名。"""
+
     filename = name.strip() or "document"
     normalized_extension = extension.strip()
     if normalized_extension and not normalized_extension.startswith("."):
@@ -35,6 +48,8 @@ def _build_download_filename(name: str, extension: str) -> str:
 
 
 def _build_content_disposition(filename: str) -> str:
+    """构造兼容 ASCII 与 UTF-8 文件名的下载响应头。"""
+
     ascii_filename = filename.encode("ascii", "ignore").decode("ascii").strip() or "document"
     encoded_filename = quote(filename, safe="")
     return f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{encoded_filename}"
@@ -47,6 +62,8 @@ def _build_documents_query(
     project_id: UUID | None = None,
     software_id: UUID | None = None,
 ):
+    """构造文档列表查询，并默认过滤已软删除记录。"""
+
     statement = select(Document).where(Document.deleted_at.is_(None))
     if project_id is not None:
         statement = statement.where(Document.project_id == project_id)
@@ -66,6 +83,16 @@ async def upload_document(
     session: Session = Depends(get_session),
     storage: MinioStorage = Depends(get_minio_storage),
 ) -> Document:
+    """上传文件并创建文档。
+
+    约束：
+    - 项目必须存在；若传入软件 ID，则软件也必须存在。
+
+    副作用：
+    - 读取上传文件。
+    - 调用文档上传服务写入对象存储、文件记录和文档记录。
+    """
+
     logger.info("Uploading document for project_id=%s, software_id=%s", project_id, software_id)
     get_active_project_or_404(project_id, session)
     if software_id is not None:
@@ -93,6 +120,15 @@ async def upload_document(
 
 @router.post("", response_model=DocumentRead, status_code=status.HTTP_201_CREATED)
 def create_document(payload: DocumentCreate, session: Session = Depends(get_session)) -> Document:
+    """按 JSON 负载直接创建文档记录。
+
+    约束：
+    - 关联的项目、软件、文件记录若存在引用，必须先校验存在性。
+
+    失败语义：
+    - 写库冲突时返回 409。
+    """
+
     logger.info("Creating document by JSON payload, project_id=%s, file_id=%s", payload.project_id, payload.file_id)
     get_active_project_or_404(payload.project_id, session)
     if payload.software_id is not None:
@@ -122,6 +158,8 @@ def list_documents(
     project_id: UUID | None = None,
     software_id: UUID | None = None,
 ) -> list[Document]:
+    """分页返回未软删除文档列表，可按项目或软件筛选。"""
+
     logger.info(
         "Listing documents, project_id=%s, software_id=%s, offset=%s, limit=%s",
         project_id,
@@ -140,6 +178,8 @@ def list_documents(
 
 @router.get("/{document_id}", response_model=DocumentRead)
 def get_document(document_id: UUID, session: Session = Depends(get_session)) -> Document:
+    """返回单个未软删除文档详情，未命中时返回 404。"""
+
     logger.info("Fetching document detail, document_id=%s", document_id)
     return get_active_document_or_404(document_id, session)
 
@@ -150,6 +190,17 @@ def download_document(
     session: Session = Depends(get_session),
     storage: MinioStorage = Depends(get_minio_storage),
 ) -> Response:
+    """下载文档对应的原始文件内容。
+
+    副作用：
+    - 访问对象存储读取二进制文件。
+
+    失败语义：
+    - 文档没有绑定文件或文件记录缺失时返回 404。
+    - 对象存储缺失对象时返回 404。
+    - 其他对象存储下载错误返回 502。
+    """
+
     logger.info("Downloading document file, document_id=%s", document_id)
     document = get_active_document_or_404(document_id, session)
     if document.file_id is None:
@@ -193,6 +244,18 @@ def download_document(
 def update_document(
     document_id: UUID, payload: DocumentUpdate, session: Session = Depends(get_session)
 ) -> Document:
+    """更新文档的已提交字段。
+
+    约束：
+    - 新引用的项目、软件、文件记录必须存在。
+
+    副作用：
+    - 更新文档字段与 `updated_at` 并提交事务。
+
+    失败语义：
+    - 写库冲突时返回 409。
+    """
+
     logger.info("Updating document, document_id=%s", document_id)
     document = get_active_document_or_404(document_id, session)
 
@@ -223,6 +286,15 @@ def update_document(
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_document(document_id: UUID, session: Session = Depends(get_session)) -> Response:
+    """逻辑删除文档。
+
+    副作用：
+    - 设置 `deleted_at` 与 `updated_at` 并提交事务。
+
+    失败语义：
+    - 写库冲突时返回 409。
+    """
+
     logger.info("Deleting document logically, document_id=%s", document_id)
     document = get_active_document_or_404(document_id, session)
     now = utc_now()

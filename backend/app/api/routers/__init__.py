@@ -1,4 +1,14 @@
-﻿from .document_parsing import router as document_parsing_router
+"""API 路由子模块聚合导出。
+
+职责：
+1. 统一暴露各资源路由对象。
+2. 供顶层 `api.router` 模块按资源挂载路由。
+
+说明：
+- 该模块仅做导出聚合，不扩展任何接口语义。
+"""
+
+from .document_parsing import router as document_parsing_router
 from .documents import router as documents_router
 from .extracted_images import router as extracted_images_router
 from .health import router as health_router

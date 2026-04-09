@@ -1,4 +1,16 @@
-﻿from datetime import datetime
+"""布局分析任务模型。
+
+职责：
+1. 描述文档布局分析任务的持久化结构与执行状态。
+2. 保存布局分析产出的 markdown 和图片哈希摘要。
+
+说明：
+- 活动任务以 `document_id + layout_model_key` 去重，仅允许存在一条
+  `pending` / `running` 记录。
+- `layout_result_source_task_id` 用于标记结果复用来源，而不是父子任务关系。
+"""
+
+from datetime import datetime
 from enum import Enum
 from uuid import UUID, uuid4
 
@@ -14,6 +26,8 @@ DEFAULT_DOCUMENT_PARSING_PDF_MODEL = DEFAULT_LAYOUT_ANALYSIS_MODEL
 
 
 class LayoutAnalysisTaskStatus(str, Enum):
+    """布局分析任务状态。"""
+
     pending = "pending"
     running = "running"
     succeeded = "succeeded"
@@ -21,6 +35,8 @@ class LayoutAnalysisTaskStatus(str, Enum):
 
 
 class LayoutAnalysisTaskBase(SQLModel):
+    """布局分析任务共享字段。"""
+
     document_id: UUID
     file_id: UUID
     storage_bucket: str
@@ -38,6 +54,12 @@ class LayoutAnalysisTaskBase(SQLModel):
 
 
 class LayoutAnalysisTask(LayoutAnalysisTaskBase, table=True):
+    """布局分析任务持久化实体。
+
+    该模型负责承接布局分析调度与结果落库。`started_at` 和 `finished_at`
+    仅表示本次执行窗口，便于上层判断任务是否已完成。
+    """
+
     __tablename__ = "layout_analysis_tasks"
 
     __table_args__ = (
@@ -89,6 +111,8 @@ class LayoutAnalysisTask(LayoutAnalysisTaskBase, table=True):
 
 
 class LayoutAnalysisTaskCreate(SQLModel):
+    """创建布局分析任务时使用的输入模型。"""
+
     document_id: UUID
     file_id: UUID
     storage_bucket: str
@@ -101,6 +125,8 @@ class LayoutAnalysisTaskCreate(SQLModel):
 
 
 class LayoutAnalysisTaskRead(LayoutAnalysisTaskBase):
+    """对外返回的布局分析任务读取模型。"""
+
     id: UUID
     created_at: datetime
     started_at: datetime | None = None
