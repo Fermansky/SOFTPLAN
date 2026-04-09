@@ -4,6 +4,7 @@ import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
+import { DetailPageHeader, DetailPageHeaderSkeleton } from "@/components/detail-page-header"
 import { UploadDocumentDialog, type UploadDocumentPayload } from "@/components/upload-document-dialog"
 import {
   AlertDialog,
@@ -312,19 +313,30 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
 
   return (
     <div className={PAGE_CONTAINER_CLASS}>
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold text-slate-900">项目详情</h1>
-        <div className="flex items-center gap-2">
-          <UploadDocumentDialog
-            onUploadDocument={uploadProjectDocument}
-            disabled={loading || Boolean(error)}
-            isUploading={isUploading}
-          />
-          <Button asChild variant="outline">
-            <Link href="/">返回列表</Link>
-          </Button>
-        </div>
-      </div>
+      {loading ? (
+        <DetailPageHeaderSkeleton />
+      ) : (
+        <DetailPageHeader
+          items={[
+            { label: "首页", href: "/" },
+            { label: project?.name ?? "项目详情" },
+          ]}
+          title={project?.name ?? "项目详情"}
+          description="查看项目基本信息、关联文档与后续操作入口。"
+          actions={
+            <>
+              <UploadDocumentDialog
+                onUploadDocument={uploadProjectDocument}
+                disabled={loading || Boolean(error)}
+                isUploading={isUploading}
+              />
+              <Button asChild variant="outline">
+                <Link href="/">返回列表</Link>
+              </Button>
+            </>
+          }
+        />
+      )}
 
       {loading ? <ProjectDetailSkeleton /> : null}
 
@@ -552,3 +564,6 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
     </div>
   )
 }
+
+
+

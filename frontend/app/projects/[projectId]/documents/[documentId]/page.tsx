@@ -4,6 +4,7 @@ import Link from "next/link"
 import { FormEvent, useCallback, useEffect, useState } from "react"
 import { toast } from "sonner"
 
+import { DetailPageHeader, DetailPageHeaderSkeleton } from "@/components/detail-page-header"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -149,24 +150,33 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
 
   return (
     <div className={PAGE_CONTAINER_CLASS}>
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-slate-900">文档详情</h1>
-          <p className="mt-1 text-sm text-slate-500">查看文档基础信息，并在当前项目下修改名称和描述。</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {document ? (
-            <Button asChild variant="outline">
-              <a href={`${apiBase}/documents/${document.id}/download`} target="_blank" rel="noreferrer">
-                下载文档
-              </a>
-            </Button>
-          ) : null}
-          <Button asChild variant="outline">
-            <Link href={`/projects/${params.projectId}`}>返回项目</Link>
-          </Button>
-        </div>
-      </div>
+      {loading ? (
+        <DetailPageHeaderSkeleton />
+      ) : (
+        <DetailPageHeader
+          items={[
+            { label: "首页", href: "/" },
+            { label: "项目详情", href: `/projects/${params.projectId}` },
+            { label: document?.name || "文档详情" },
+          ]}
+          title={document?.name ?? "文档详情"}
+          description="查看文档基础信息，并在当前项目下修改名称和描述。"
+          actions={
+            <>
+              {document ? (
+                <Button asChild variant="outline">
+                  <a href={`${apiBase}/documents/${document.id}/download`} target="_blank" rel="noreferrer">
+                    下载文档
+                  </a>
+                </Button>
+              ) : null}
+              <Button asChild variant="outline">
+                <Link href={`/projects/${params.projectId}`}>返回项目</Link>
+              </Button>
+            </>
+          }
+        />
+      )}
 
       {loading ? <DocumentDetailSkeleton /> : null}
 
@@ -251,6 +261,9 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
     </div>
   )
 }
+
+
+
 
 
 
