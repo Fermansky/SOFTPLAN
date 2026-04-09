@@ -1,4 +1,4 @@
-"use client"
+﻿"use client"
 
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
@@ -21,6 +21,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { ApiDocument, formatDate, getApiBaseUrl, listProjectDocuments } from "@/lib/documents"
 
 type ApiProjectStatus = "draft" | "analyzing" | "completed" | "archived"
 
@@ -30,18 +31,6 @@ type ApiProject = {
   description: string
   status: ApiProjectStatus
   current_version_id: string | null
-  created_at: string
-  updated_at: string
-}
-
-type ApiDocument = {
-  id: string
-  file_id: string | null
-  project_id: string
-  software_id: string | null
-  name: string
-  description: string
-  extra_info: Record<string, unknown> | null
   created_at: string
   updated_at: string
 }
@@ -57,20 +46,9 @@ function getStatusMeta(status: ApiProjectStatus) {
   return map[status]
 }
 
-function formatDate(value: string) {
-  return new Date(value).toLocaleString("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  })
-}
-
 function DocumentsTableSkeleton() {
   return (
-    <Table className="min-w-[860px]">
+    <Table className="min-w-[960px]">
       <TableHeader>
         <TableRow className="hover:bg-transparent">
           <TableHead>文档名称</TableHead>
@@ -101,7 +79,8 @@ function DocumentsTableSkeleton() {
             </TableCell>
             <TableCell>
               <div className="flex gap-2">
-                <Skeleton className="h-8 w-14" />
+                <Skeleton className="h-8 w-16" />
+                <Skeleton className="h-8 w-16" />
                 <Skeleton className="h-8 w-14" />
               </div>
             </TableCell>
@@ -152,7 +131,7 @@ function ProjectDetailSkeleton() {
 }
 
 export default function ProjectDetailPage({ params }: { params: { projectId: string } }) {
-  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
+  const apiBase = getApiBaseUrl()
 
   const [project, setProject] = useState<ApiProject | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -173,20 +152,20 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
         setLoading(true)
         setError(null)
 
-        const res = await fetch(`${apiBase}/projects/${params.projectId}`, {
+        const response = await fetch(`${apiBase}/projects/${params.projectId}`, {
           method: "GET",
           signal,
           headers: { Accept: "application/json" },
         })
 
-        if (res.status === 404) {
+        if (response.status === 404) {
           throw new Error("项目不存在")
         }
-        if (!res.ok) {
-          throw new Error(`加载项目详情失败（HTTP ${res.status}）`)
+        if (!response.ok) {
+          throw new Error(`加载项目详情失败（HTTP ${response.status}）`)
         }
 
-        const data = (await res.json()) as ApiProject
+        const data = (await response.json()) as ApiProject
         setProject(data)
       } catch (fetchError) {
         if ((fetchError as Error).name === "AbortError") return
@@ -203,23 +182,8 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
       try {
         setDocumentsLoading(true)
         setDocumentsError(null)
-
-        const query = new URLSearchParams({
-          project_id: params.projectId,
-          limit: "200",
-        })
-        const res = await fetch(`${apiBase}/documents?${query.toString()}`, {
-          method: "GET",
-          signal,
-          headers: { Accept: "application/json" },
-        })
-
-        if (!res.ok) {
-          throw new Error(`加载项目文档失败（HTTP ${res.status}）`)
-        }
-
-        const data = (await res.json()) as ApiDocument[]
-        setDocuments(Array.isArray(data) ? data : [])
+        const data = await listProjectDocuments(params.projectId, signal)
+        setDocuments(data)
       } catch (fetchError) {
         if ((fetchError as Error).name === "AbortError") return
         setDocuments([])
@@ -228,7 +192,7 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
         setDocumentsLoading(false)
       }
     },
-    [apiBase, params.projectId]
+    [params.projectId]
   )
 
   useEffect(() => {
@@ -251,15 +215,15 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
       formData.append("description", description)
       formData.append("file", file)
 
-      const res = await fetch(`${apiBase}/documents/upload`, {
+      const response = await fetch(`${apiBase}/documents/upload`, {
         method: "POST",
         body: formData,
       })
 
-      if (!res.ok) {
-        let message = `上传失败（HTTP ${res.status}）`
+      if (!response.ok) {
+        let message = `上传失败（HTTP ${response.status}）`
         try {
-          const errorData = (await res.json()) as { detail?: string }
+          const errorData = (await response.json()) as { detail?: string }
           if (errorData.detail) {
             message = errorData.detail
           }
@@ -270,25 +234,25 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
       }
 
       toast.success("上传成功", {
-        description: `文档「${name}」已上传。`,
+        description: `文档“${name}”已上传。`,
       })
       await fetchProjectDocuments()
-    } catch (uploadErr) {
-      throw uploadErr instanceof Error ? uploadErr : new Error("上传失败，请重试")
+    } catch (uploadError) {
+      throw uploadError instanceof Error ? uploadError : new Error("上传失败，请重试")
     } finally {
       setIsUploading(false)
     }
   }
 
   async function deleteProjectDocument(documentId: string) {
-    const res = await fetch(`${apiBase}/documents/${documentId}`, {
+    const response = await fetch(`${apiBase}/documents/${documentId}`, {
       method: "DELETE",
     })
 
-    if (!res.ok) {
-      let message = `删除失败（HTTP ${res.status}）`
+    if (!response.ok) {
+      let message = `删除失败（HTTP ${response.status}）`
       try {
-        const errorData = (await res.json()) as { detail?: string }
+        const errorData = (await response.json()) as { detail?: string }
         if (errorData.detail) {
           message = errorData.detail
         }
@@ -311,7 +275,7 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
       setDocuments((prev) => prev.filter((item) => item.id !== targetDocument.id))
       setDocumentToDelete(null)
       toast.success("删除成功", {
-        description: `文档「${targetDocument.name || "--"}」已删除。`,
+        description: `文档“${targetDocument.name || "--"}”已删除。`,
       })
     } catch (deleteError) {
       const errorMessage = deleteError instanceof Error ? deleteError.message : "删除文档失败。"
@@ -398,7 +362,7 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
                 <Empty className="rounded-2xl border border-dashed border-slate-300 bg-slate-50">
                   <EmptyHeader>
                     <EmptyTitle>当前项目暂无文档</EmptyTitle>
-                    <EmptyDescription>请先上传文档，后续可在此查看和下载。</EmptyDescription>
+                    <EmptyDescription>请先上传文档，后续可以在这里查看、编辑和下载。</EmptyDescription>
                   </EmptyHeader>
                   <EmptyContent>
                     <UploadDocumentDialog
@@ -409,7 +373,7 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
                   </EmptyContent>
                 </Empty>
               ) : (
-                <Table className="min-w-[860px]">
+                <Table className="min-w-[960px]">
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
                       <TableHead>文档名称</TableHead>
@@ -421,40 +385,49 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {documents.map((item) => (
-                      <TableRow key={item.id}>
-                        <TableCell className="max-w-[260px] whitespace-normal break-words font-medium text-slate-900">
-                          {item.name || "--"}
-                        </TableCell>
-                        <TableCell className="max-w-[220px] whitespace-normal break-all text-slate-600">
-                          {item.software_id ?? "--"}
-                        </TableCell>
-                        <TableCell className="max-w-[320px] whitespace-normal break-words text-slate-600">
-                          {item.description || "--"}
-                        </TableCell>
-                        <TableCell>{formatDate(item.created_at)}</TableCell>
-                        <TableCell>{formatDate(item.updated_at)}</TableCell>
-                        <TableCell>
-                          <div className="flex flex-wrap gap-2">
-                            <Button asChild size="sm" variant="outline">
-                              <a href={`${apiBase}/documents/${item.id}/download`} target="_blank" rel="noreferrer">
-                                下载
-                              </a>
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="destructive"
-                              onClick={() => {
-                                setDeleteDocumentError("")
-                                setDocumentToDelete(item)
-                              }}
-                            >
-                              删除
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {documents.map((item) => {
+                      const detailHref = `/projects/${params.projectId}/documents/${item.id}`
+
+                      return (
+                        <TableRow key={item.id}>
+                          <TableCell className="max-w-[260px] whitespace-normal break-words font-medium text-slate-900">
+                            <Link href={detailHref} className="hover:underline">
+                              {item.name || "--"}
+                            </Link>
+                          </TableCell>
+                          <TableCell className="max-w-[220px] whitespace-normal break-all text-slate-600">
+                            {item.software_id ?? "--"}
+                          </TableCell>
+                          <TableCell className="max-w-[320px] whitespace-normal break-words text-slate-600">
+                            {item.description || "--"}
+                          </TableCell>
+                          <TableCell>{formatDate(item.created_at)}</TableCell>
+                          <TableCell>{formatDate(item.updated_at)}</TableCell>
+                          <TableCell>
+                            <div className="flex flex-wrap gap-2">
+                              <Button asChild size="sm" variant="secondary">
+                                <Link href={detailHref}>查看详情</Link>
+                              </Button>
+                              <Button asChild size="sm" variant="outline">
+                                <a href={`${apiBase}/documents/${item.id}/download`} target="_blank" rel="noreferrer">
+                                  下载
+                                </a>
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                onClick={() => {
+                                  setDeleteDocumentError("")
+                                  setDocumentToDelete(item)
+                                }}
+                              >
+                                删除
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
                   </TableBody>
                 </Table>
               )}
@@ -477,7 +450,7 @@ export default function ProjectDetailPage({ params }: { params: { projectId: str
             <AlertDialogTitle>确认删除文档</AlertDialogTitle>
             <AlertDialogDescription>
               {documentToDelete
-                ? `确定要删除文档「${documentToDelete.name || "--"}」吗？该操作不可恢复。`
+                ? `确定要删除文档“${documentToDelete.name || "--"}”吗？该操作不可恢复。`
                 : "确定要删除该文档吗？"}
             </AlertDialogDescription>
             {deleteDocumentError ? (
