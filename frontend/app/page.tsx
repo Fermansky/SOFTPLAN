@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { useEffect, useMemo, useState } from "react"
-import { FolderOpen, Search } from "lucide-react"
+import { FolderOpen, Search, Settings2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { CreateProjectDialog, type CreateProjectPayload } from "@/components/create-project-dialog"
@@ -346,7 +346,15 @@ export default function HomePage() {
               disabled={isProjectsLoading}
             />
           </div>
-          {!isProjectsLoading && hasProjects ? <CreateProjectDialog onCreateProject={handleCreateProject} /> : null}
+          <div className="flex items-center gap-2 sm:shrink-0">
+            <Button asChild variant="outline">
+              <Link href="/settings">
+                <Settings2 className="size-4" />
+                设置
+              </Link>
+            </Button>
+            {!isProjectsLoading && hasProjects ? <CreateProjectDialog onCreateProject={handleCreateProject} /> : null}
+          </div>
         </div>
       </div>
 
@@ -503,3 +511,4 @@ export default function HomePage() {
     </div>
   )
 }
+
