@@ -45,9 +45,9 @@ export function SettingsShell({ children }: { children: ReactNode }) {
         }
       />
 
-      <section className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm lg:h-[calc(100vh-14rem)]">
-        <div className="grid h-full gap-0 lg:grid-cols-[260px_minmax(0,1fr)]">
-          <aside className="border-b border-slate-200 bg-slate-50/80 lg:overflow-y-auto lg:border-r lg:border-b-0">
+      <section className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm xl:h-[calc(100vh-14rem)] xl:min-h-0">
+        <div className="grid h-full min-h-0 gap-0 lg:grid-cols-[260px_minmax(0,1fr)]">
+          <aside className="min-h-0 border-b border-slate-200 bg-slate-50/80 xl:overflow-y-auto xl:border-r xl:border-b-0">
             <div className="border-b border-slate-200 px-5 py-5">
               <div className="flex items-center gap-3">
                 <div className="flex size-11 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-sm">
@@ -115,7 +115,7 @@ export function SettingsShell({ children }: { children: ReactNode }) {
             </nav>
           </aside>
 
-          <div className="flex min-w-0 flex-col bg-white">
+          <div className="flex min-h-0 min-w-0 flex-col bg-white">
             <div className="shrink-0 border-b border-slate-200 px-5 py-4 lg:px-6">
               <p className="text-sm font-semibold text-slate-900">{currentItem.label}</p>
               <p className="mt-1 text-sm text-slate-500">
@@ -123,10 +123,12 @@ export function SettingsShell({ children }: { children: ReactNode }) {
               </p>
             </div>
 
-            <div className="min-h-0 flex-1 px-5 py-5 lg:overflow-y-auto lg:px-6 lg:py-6">{children}</div>
+            <div className="min-h-0 flex-1 px-5 py-5 xl:overflow-hidden lg:px-6 lg:py-6">{children}</div>
           </div>
         </div>
       </section>
     </div>
   )
 }
+
+
