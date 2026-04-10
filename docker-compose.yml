@@ -69,7 +69,7 @@
         condition: service_started
 
   postgres:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15-trixie
     container_name: softplan-postgres
     ports:
       - "5432:5432"
@@ -79,6 +79,7 @@
       POSTGRES_DB: ${POSTGRES_DB:-softplan}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init/01-pgvector.sql:/docker-entrypoint-initdb.d/01-pgvector.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-softplan} -d ${POSTGRES_DB:-softplan}"]
       interval: 5s

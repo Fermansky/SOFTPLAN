@@ -56,6 +56,13 @@ def _migrate_legacy_document_parsing_table() -> None:
             connection.exec_driver_sql(f"DROP INDEX IF EXISTS {index_name}")
 
 
+def _ensure_pgvector_extension() -> None:
+    if engine.dialect.name != "postgresql":
+        return
+
+    _execute_statements(["CREATE EXTENSION IF NOT EXISTS vector"])
+
+
 
 def _ensure_extracted_image_semantic_columns() -> None:
     if engine.dialect.name != "postgresql":
@@ -276,6 +283,7 @@ def _ensure_llm_config_indexes() -> None:
 
 
 def create_db_and_tables() -> None:
+    _ensure_pgvector_extension()
     _migrate_legacy_document_parsing_table()
     SQLModel.metadata.create_all(engine)
     _ensure_extracted_image_semantic_columns()
