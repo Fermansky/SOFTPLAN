@@ -8,6 +8,7 @@ import { DetailPageHeader, DetailPageHeaderSkeleton } from "@/components/detail-
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
@@ -104,6 +105,7 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
   const [document, setDocument] = useState<ApiDocumentDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
 
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
@@ -141,6 +143,21 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
     return () => controller.abort()
   }, [loadDocument])
 
+  function openEditDialog() {
+    if (!document) return
+    setName(document.name)
+    setDescription(document.description)
+    setFormError("")
+    setIsEditDialogOpen(true)
+  }
+
+  function handleEditDialogOpenChange(nextOpen: boolean) {
+    setIsEditDialogOpen(nextOpen)
+    if (!nextOpen) {
+      setFormError("")
+    }
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
@@ -169,6 +186,8 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
       }))
       setName(updated.name)
       setDescription(updated.description)
+      setIsEditDialogOpen(false)
+      setFormError("")
       toast.success("保存成功", {
         description: `文档“${updated.name}”已更新。`,
       })
@@ -230,7 +249,12 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.95fr)]">
             <Card className="border-slate-200 bg-white/90 shadow-sm">
               <CardHeader className="pb-3">
-                <CardTitle className="text-xl text-slate-950">{document.name || "未命名文档"}</CardTitle>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <CardTitle className="text-xl text-slate-950">{document.name || "未命名文档"}</CardTitle>
+                  <Button type="button" variant="outline" onClick={openEditDialog}>
+                    编辑文档
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="space-y-5 p-5 pt-0">
                 <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
@@ -285,57 +309,58 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
               </CardContent>
             </Card>
           </div>
-
-          <Card className="border-slate-200 bg-slate-50/60 pb-0 shadow-sm">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-lg text-slate-900">编辑文档</CardTitle>
-              <p className="text-sm text-slate-500">需要调整文档名称或描述时，再在这里修改。</p>
-            </CardHeader>
-            <form onSubmit={handleSubmit}>
-              <CardContent className="grid gap-4 p-5 pt-0">
-                <div className="grid gap-2">
-                  <label htmlFor="document-name" className="text-sm font-medium text-slate-700">
-                    文档名称
-                  </label>
-                  <Input
-                    id="document-name"
-                    value={name}
-                    onChange={(event) => setName(event.target.value)}
-                    placeholder="请输入文档名称"
-                    maxLength={255}
-                    disabled={isSaving}
-                    required
-                  />
-                </div>
-
-                <div className="grid gap-2">
-                  <label htmlFor="document-description" className="text-sm font-medium text-slate-700">
-                    文档描述
-                  </label>
-                  <Textarea
-                    id="document-description"
-                    value={description}
-                    onChange={(event) => setDescription(event.target.value)}
-                    placeholder="可选，补充文档用途或背景"
-                    disabled={isSaving}
-                  />
-                </div>
-
-                {formError ? <p className="text-sm text-destructive">{formError}</p> : null}
-              </CardContent>
-              <CardFooter className="justify-end gap-2">
-                <Button asChild variant="outline">
-                  <Link href={`/projects/${params.projectId}`}>返回项目</Link>
-                </Button>
-                <Button type="submit" disabled={isSaving}>
-                  {isSaving ? "保存中..." : "保存修改"}
-                </Button>
-              </CardFooter>
-            </form>
-          </Card>
         </div>
       ) : null}
+
+      <Dialog open={isEditDialogOpen} onOpenChange={handleEditDialogOpenChange}>
+        <DialogContent className="sm:max-w-lg">
+          <form onSubmit={handleSubmit} className="grid gap-4">
+            <DialogHeader>
+              <DialogTitle>编辑文档</DialogTitle>
+              <DialogDescription>修改文档名称和描述，保存后会立即同步到当前页面。</DialogDescription>
+            </DialogHeader>
+
+            <div className="grid gap-2">
+              <label htmlFor="document-name" className="text-sm font-medium text-slate-700">
+                文档名称
+              </label>
+              <Input
+                id="document-name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="请输入文档名称"
+                maxLength={255}
+                disabled={isSaving}
+                required
+              />
+            </div>
+
+            <div className="grid gap-2">
+              <label htmlFor="document-description" className="text-sm font-medium text-slate-700">
+                文档描述
+              </label>
+              <Textarea
+                id="document-description"
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                placeholder="可选，补充文档用途或背景"
+                disabled={isSaving}
+              />
+            </div>
+
+            {formError ? <p className="text-sm text-destructive">{formError}</p> : null}
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => handleEditDialogOpenChange(false)} disabled={isSaving}>
+                取消
+              </Button>
+              <Button type="submit" disabled={isSaving}>
+                {isSaving ? "保存中..." : "保存修改"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
-
