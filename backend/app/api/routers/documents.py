@@ -25,14 +25,19 @@ from ..dependencies import (
     get_minio_storage,
     get_software_or_404,
 )
+from .document_parsing import DocumentParsingTaskRead, to_document_parsing_task_read
 from ...database import get_session
 from ...models import Document, DocumentCreate, DocumentRead, DocumentUpdate
 from ...models.common import utc_now
-from ...services import MinioStorage
+from ...services import MinioStorage, get_default_document_parsing_task_for_document_file
 from ...services.document_upload_service import upload_document_with_dedupe
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 logger = logging.getLogger(__name__)
+
+
+class DocumentDetailRead(DocumentRead):
+    parsing_task: DocumentParsingTaskRead | None = None
 
 
 def _build_download_filename(name: str, extension: str) -> str:
@@ -176,12 +181,22 @@ def list_documents(
     return list(session.exec(statement).all())
 
 
-@router.get("/{document_id}", response_model=DocumentRead)
-def get_document(document_id: UUID, session: Session = Depends(get_session)) -> Document:
+@router.get("/{document_id}", response_model=DocumentDetailRead)
+def get_document(document_id: UUID, session: Session = Depends(get_session)) -> DocumentDetailRead:
     """返回单个未软删除文档详情，未命中时返回 404。"""
 
     logger.info("Fetching document detail, document_id=%s", document_id)
-    return get_active_document_or_404(document_id, session)
+    document = get_active_document_or_404(document_id, session)
+    parsing_task = None
+    if document.file_id is not None:
+        task = get_default_document_parsing_task_for_document_file(
+            session,
+            document_id=document.id,
+            file_id=document.file_id,
+        )
+        if task is not None:
+            parsing_task = to_document_parsing_task_read(session, task)
+    return DocumentDetailRead(**document.model_dump(), parsing_task=parsing_task)
 
 
 @router.get("/{document_id}/download")

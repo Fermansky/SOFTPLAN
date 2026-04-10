@@ -256,7 +256,7 @@ def _get_image_analysis_status(
     return DocumentParsingImageAnalysisStatus.running
 
 
-def _to_document_parsing_task_read(
+def to_document_parsing_task_read(
     session: Session,
     task: DocumentParsingTask,
     *,
@@ -391,7 +391,7 @@ def create_document_parsing_task(
             image_model=submission.task.target_image_model,
         ),
     )
-    return _to_document_parsing_task_read(session, submission.task, reused=submission.reused)
+    return to_document_parsing_task_read(session, submission.task, reused=submission.reused)
 
 
 @router.get("/tasks/{task_id}", response_model=DocumentParsingTaskRead)
@@ -401,7 +401,7 @@ def get_document_parsing_task(task_id: UUID, session: Session = Depends(get_sess
     task = get_document_parsing_task_by_id(session, task_id=task_id)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document parsing task not found")
-    return _to_document_parsing_task_read(session, task)
+    return to_document_parsing_task_read(session, task)
 
 
 @router.get("/results/{document_id}", response_model=DocumentParsingDocumentResultRead)
@@ -431,7 +431,7 @@ def get_document_parsing_document_result(
             storage_key=file_record.storage_key,
         )
 
-    task_read = _to_document_parsing_task_read(session, task)
+    task_read = to_document_parsing_task_read(session, task)
     return DocumentParsingDocumentResultRead(
         document_id=resolved_document_id,
         file_id=file_record.id,

@@ -261,6 +261,31 @@ def get_latest_succeeded_document_parsing_task_for_document_file(
     return session.exec(statement).first()
 
 
+def get_default_document_parsing_task_for_document_file(
+    session: Session,
+    *,
+    document_id: UUID,
+    file_id: UUID,
+) -> DocumentParsingTask | None:
+    latest_task = get_latest_document_parsing_task_for_document_file(
+        session,
+        document_id=document_id,
+        file_id=file_id,
+    )
+    if latest_task is None:
+        return None
+    if latest_task.status != DocumentParsingTaskStatus.failed:
+        return latest_task
+
+    latest_succeeded_task = get_latest_succeeded_document_parsing_task_for_document_file(
+        session,
+        document_id=document_id,
+        file_id=file_id,
+    )
+    if latest_succeeded_task is not None:
+        return latest_succeeded_task
+    return latest_task
+
 
 def get_document_parsing_image_items(session: Session, *, task_id: UUID) -> list[DocumentParsingImageItem]:
     statement = (

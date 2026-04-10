@@ -144,6 +144,109 @@ class DocumentParsingTaskServiceTests(TestCase):
         self.assertGreaterEqual(len(session.refreshed), 1)
         sync_mock.assert_called_once_with(result.task.id)
 
+    def test_get_default_document_parsing_task_returns_none_without_tasks(self):
+        with patch.object(service, "get_latest_document_parsing_task_for_document_file", return_value=None), patch.object(
+            service,
+            "get_latest_succeeded_document_parsing_task_for_document_file",
+        ) as latest_succeeded_mock:
+            result = service.get_default_document_parsing_task_for_document_file(
+                _SessionStub(),
+                document_id=uuid4(),
+                file_id=uuid4(),
+            )
+
+        self.assertIsNone(result)
+        latest_succeeded_mock.assert_not_called()
+
+    def test_get_default_document_parsing_task_returns_latest_non_failed_task(self):
+        latest_task = DocumentParsingTask(
+            document_id=uuid4(),
+            file_id=uuid4(),
+            storage_bucket="softplan",
+            storage_key="documents/a.pdf",
+            target_layout_model="marker",
+            layout_model_key="marker",
+            image_model_key="vision-model",
+            layout_task_id=uuid4(),
+            status=DocumentParsingTaskStatus.running,
+        )
+
+        with patch.object(service, "get_latest_document_parsing_task_for_document_file", return_value=latest_task), patch.object(
+            service,
+            "get_latest_succeeded_document_parsing_task_for_document_file",
+        ) as latest_succeeded_mock:
+            result = service.get_default_document_parsing_task_for_document_file(
+                _SessionStub(),
+                document_id=latest_task.document_id,
+                file_id=latest_task.file_id,
+            )
+
+        self.assertEqual(result, latest_task)
+        latest_succeeded_mock.assert_not_called()
+
+    def test_get_default_document_parsing_task_falls_back_to_latest_succeeded_task(self):
+        latest_failed_task = DocumentParsingTask(
+            document_id=uuid4(),
+            file_id=uuid4(),
+            storage_bucket="softplan",
+            storage_key="documents/a.pdf",
+            target_layout_model="marker",
+            layout_model_key="marker",
+            image_model_key="vision-model",
+            layout_task_id=uuid4(),
+            status=DocumentParsingTaskStatus.failed,
+        )
+        latest_succeeded_task = DocumentParsingTask(
+            document_id=latest_failed_task.document_id,
+            file_id=latest_failed_task.file_id,
+            storage_bucket="softplan",
+            storage_key="documents/a.pdf",
+            target_layout_model="marker",
+            layout_model_key="marker",
+            image_model_key="vision-model",
+            layout_task_id=uuid4(),
+            status=DocumentParsingTaskStatus.succeeded,
+        )
+
+        with patch.object(service, "get_latest_document_parsing_task_for_document_file", return_value=latest_failed_task), patch.object(
+            service,
+            "get_latest_succeeded_document_parsing_task_for_document_file",
+            return_value=latest_succeeded_task,
+        ):
+            result = service.get_default_document_parsing_task_for_document_file(
+                _SessionStub(),
+                document_id=latest_failed_task.document_id,
+                file_id=latest_failed_task.file_id,
+            )
+
+        self.assertEqual(result, latest_succeeded_task)
+
+    def test_get_default_document_parsing_task_keeps_latest_failed_task_when_no_success_exists(self):
+        latest_failed_task = DocumentParsingTask(
+            document_id=uuid4(),
+            file_id=uuid4(),
+            storage_bucket="softplan",
+            storage_key="documents/a.pdf",
+            target_layout_model="marker",
+            layout_model_key="marker",
+            image_model_key="vision-model",
+            layout_task_id=uuid4(),
+            status=DocumentParsingTaskStatus.failed,
+        )
+
+        with patch.object(service, "get_latest_document_parsing_task_for_document_file", return_value=latest_failed_task), patch.object(
+            service,
+            "get_latest_succeeded_document_parsing_task_for_document_file",
+            return_value=None,
+        ):
+            result = service.get_default_document_parsing_task_for_document_file(
+                _SessionStub(),
+                document_id=latest_failed_task.document_id,
+                file_id=latest_failed_task.file_id,
+            )
+
+        self.assertEqual(result, latest_failed_task)
+
     def test_recompute_document_parsing_task_state_running_when_images_pending(self):
         task = DocumentParsingTask(
             document_id=uuid4(),

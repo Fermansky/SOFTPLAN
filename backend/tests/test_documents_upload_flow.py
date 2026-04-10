@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 from unittest import TestCase
 from unittest.mock import patch
 from uuid import uuid4
@@ -6,8 +7,8 @@ from uuid import uuid4
 from fastapi import HTTPException
 from minio.error import S3Error
 
-from backend.app.api.routers import documents
-from backend.app.models import Document, DocumentCreate, FileRecord
+from backend.app.api.routers import document_parsing, documents
+from backend.app.models import Document, DocumentCreate, DocumentParsingTask, DocumentParsingTaskStatus, FileRecord
 
 
 class _UploadFileStub:
@@ -256,6 +257,81 @@ class DocumentsCreateTests(TestCase):
         get_file_mock.assert_called_once()
         self.assertEqual(created_document.file_id, payload.file_id)
         self.assertTrue(session.committed)
+
+
+class DocumentsDetailTests(TestCase):
+    def _build_task_read(self, task: DocumentParsingTask) -> document_parsing.DocumentParsingTaskRead:
+        now = datetime.now(timezone.utc)
+        return document_parsing.DocumentParsingTaskRead(
+            id=task.id,
+            document_id=task.document_id,
+            file_id=task.file_id,
+            storage_bucket=task.storage_bucket,
+            storage_key=task.storage_key,
+            requested_layout_model=None,
+            target_layout_model="marker",
+            layout_model_key="marker",
+            requested_image_model=None,
+            target_image_model="vision-model",
+            image_model_key="vision-model",
+            force_layout_analysis=False,
+            layout_task_id=task.layout_task_id,
+            status=task.status,
+            layout_status="succeeded",
+            image_analysis_status="succeeded",
+            image_total_count=1,
+            image_succeeded_count=1,
+            image_failed_count=0,
+            reused=False,
+            markdown="# parsed",
+            image_hashes={"img-1": "a" * 64},
+            image_items=[],
+            error_message=None,
+            created_at=now,
+            started_at=now,
+            finished_at=now,
+            updated_at=now,
+        )
+
+    def test_get_document_returns_detail_without_parsing_task(self):
+        document = Document(project_id=uuid4(), file_id=uuid4(), name="requirements")
+
+        with patch.object(documents, "get_active_document_or_404", return_value=document), patch.object(
+            documents,
+            "get_default_document_parsing_task_for_document_file",
+            return_value=None,
+        ), patch.object(documents, "to_document_parsing_task_read") as to_task_read_mock:
+            response = documents.get_document(document_id=document.id, session=_SessionCapture())
+
+        self.assertEqual(response.id, document.id)
+        self.assertIsNone(response.parsing_task)
+        to_task_read_mock.assert_not_called()
+
+    def test_get_document_returns_default_parsing_task_detail(self):
+        document = Document(project_id=uuid4(), file_id=uuid4(), name="requirements")
+        task = DocumentParsingTask(
+            document_id=document.id,
+            file_id=document.file_id,
+            storage_bucket="softplan",
+            storage_key="documents/2026/04/requirements.pdf",
+            target_layout_model="marker",
+            layout_model_key="marker",
+            image_model_key="vision-model",
+            layout_task_id=uuid4(),
+            status=DocumentParsingTaskStatus.succeeded,
+        )
+        task_read = self._build_task_read(task)
+
+        with patch.object(documents, "get_active_document_or_404", return_value=document), patch.object(
+            documents,
+            "get_default_document_parsing_task_for_document_file",
+            return_value=task,
+        ), patch.object(documents, "to_document_parsing_task_read", return_value=task_read):
+            response = documents.get_document(document_id=document.id, session=_SessionCapture())
+
+        self.assertIsNotNone(response.parsing_task)
+        self.assertEqual(response.parsing_task.id, task.id)
+        self.assertEqual(response.parsing_task.markdown, "# parsed")
 
 
 class DocumentsDownloadTests(TestCase):
