@@ -13,7 +13,6 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
 import {
   ApiDocumentDetail,
-  ApiDocumentParsingImageItem,
   ApiDocumentParsingTask,
   fetchDocument,
   formatDate,
@@ -69,8 +68,8 @@ function DocumentDetailSkeleton() {
 function DetailItem({ label, value, breakAll = false }: { label: string; value: string; breakAll?: boolean }) {
   return (
     <div>
-      <p className="text-sm text-slate-500">{label}</p>
-      <p className={`mt-1 text-slate-900 ${breakAll ? "break-all" : "break-words"}`}>{value}</p>
+      <p className="text-xs uppercase tracking-wide text-slate-500">{label}</p>
+      <p className={`mt-1 text-sm font-medium text-slate-900 ${breakAll ? "break-all" : "break-words"}`}>{value}</p>
     </div>
   )
 }
@@ -90,15 +89,13 @@ function getTaskStatusMeta(status: ApiDocumentParsingTask["status"]) {
   return map[status]
 }
 
-function getImageItemStatusMeta(status: ApiDocumentParsingImageItem["status"]) {
-  const map: Record<ApiDocumentParsingImageItem["status"], { label: string; className: string }> = {
-    pending: { label: "待处理", className: "bg-amber-100 text-amber-800 hover:bg-amber-100" },
-    running: { label: "进行中", className: "bg-sky-100 text-sky-800 hover:bg-sky-100" },
-    succeeded: { label: "已成功", className: "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" },
-    failed: { label: "失败", className: "bg-rose-100 text-rose-800 hover:bg-rose-100" },
-  }
-
-  return map[status]
+function SecondaryMetaItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+      <p className="text-[11px] uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-1 text-sm font-medium text-slate-900">{value}</p>
+    </div>
+  )
 }
 
 export default function DocumentDetailPage({ params }: { params: { projectId: string; documentId: string } }) {
@@ -230,116 +227,69 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
 
       {!loading && !error && document ? (
         <div className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>{document.name || "未命名文档"}</CardTitle>
-            </CardHeader>
-            <CardContent className="grid gap-4 p-5 pt-0 sm:grid-cols-2">
-              <DetailItem label="文档 ID" value={document.id} breakAll />
-              <DetailItem label="文件 ID" value={document.file_id ?? "--"} breakAll />
-              <DetailItem label="项目 ID" value={document.project_id} breakAll />
-              <DetailItem label="软件 ID" value={document.software_id ?? "--"} breakAll />
-              <DetailItem label="创建时间" value={formatDate(document.created_at)} />
-              <DetailItem label="更新时间" value={formatDate(document.updated_at)} />
-              <div className="sm:col-span-2">
-                <p className="text-sm text-slate-500">当前描述</p>
-                <p className="mt-1 whitespace-pre-wrap break-words text-slate-900">{document.description || "--"}</p>
-              </div>
-            </CardContent>
-          </Card>
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.95fr)]">
+            <Card className="border-slate-200 bg-white/90 shadow-sm">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-xl text-slate-950">{document.name || "未命名文档"}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-5 p-5 pt-0">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">文档摘要</p>
+                  <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-7 text-slate-700">
+                    {document.description || "暂无描述"}
+                  </p>
+                </div>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>解析任务</CardTitle>
-            </CardHeader>
-            <CardContent className="grid gap-4 p-5 pt-0">
-              {document.parsing_task ? (
-                <>
-                  <div className="flex flex-wrap items-center gap-2">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <SecondaryMetaItem label="创建时间" value={formatDate(document.created_at)} />
+                  <SecondaryMetaItem label="更新时间" value={formatDate(document.updated_at)} />
+                </div>
+
+                <div className="grid gap-3 text-xs text-slate-500 sm:grid-cols-2">
+                  <DetailItem label="文档 ID" value={document.id} breakAll />
+                  <DetailItem label="文件 ID" value={document.file_id ?? "--"} breakAll />
+                  <DetailItem label="项目 ID" value={document.project_id} breakAll />
+                  <DetailItem label="软件 ID" value={document.software_id ?? "--"} breakAll />
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-slate-200 bg-white/90 shadow-sm">
+              <CardHeader className="pb-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <CardTitle className="text-lg text-slate-950">解析任务</CardTitle>
+                    <p className="mt-1 text-sm text-slate-500">显示默认关联任务的最新状态与关键时间。</p>
+                  </div>
+                  {document.parsing_task ? (
                     <Badge className={getTaskStatusMeta(document.parsing_task.status).className}>
                       {getTaskStatusMeta(document.parsing_task.status).label}
                     </Badge>
-                    <p className="text-sm text-slate-500">
-                      默认关联任务会优先展示最新任务；若最新任务失败，则回退到最近一次成功任务。
-                    </p>
+                  ) : null}
+                </div>
+              </CardHeader>
+              <CardContent className="p-5 pt-0">
+                {document.parsing_task ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <SecondaryMetaItem label="创建时间" value={formatDate(document.parsing_task.created_at)} />
+                    <SecondaryMetaItem label="开始时间" value={formatOptionalDate(document.parsing_task.started_at)} />
+                    <SecondaryMetaItem label="完成时间" value={formatOptionalDate(document.parsing_task.finished_at)} />
+                    <SecondaryMetaItem label="更新时间" value={formatDate(document.parsing_task.updated_at)} />
                   </div>
-
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <DetailItem label="任务 ID" value={document.parsing_task.id} breakAll />
-                    <DetailItem label="布局任务 ID" value={document.parsing_task.layout_task_id} breakAll />
-                    <DetailItem label="任务状态" value={document.parsing_task.status} />
-                    <DetailItem label="布局状态" value={document.parsing_task.layout_status} />
-                    <DetailItem label="图像分析状态" value={document.parsing_task.image_analysis_status} />
-                    <DetailItem
-                      label="图像统计"
-                      value={`${document.parsing_task.image_succeeded_count}/${document.parsing_task.image_total_count} 成功，${document.parsing_task.image_failed_count} 失败`}
-                    />
-                    <DetailItem label="布局模型" value={document.parsing_task.target_layout_model} />
-                    <DetailItem label="图像模型" value={document.parsing_task.target_image_model ?? "--"} />
-                    <DetailItem label="创建时间" value={formatDate(document.parsing_task.created_at)} />
-                    <DetailItem label="开始时间" value={formatOptionalDate(document.parsing_task.started_at)} />
-                    <DetailItem label="完成时间" value={formatOptionalDate(document.parsing_task.finished_at)} />
-                    <DetailItem label="更新时间" value={formatDate(document.parsing_task.updated_at)} />
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-4">
+                    <p className="text-sm font-medium text-slate-700">暂无解析任务</p>
+                    <p className="mt-1 text-sm text-slate-500">当前文档还没有可展示的默认解析任务状态。</p>
                   </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
 
-                  <div>
-                    <p className="text-sm text-slate-500">任务错误</p>
-                    <p className="mt-1 whitespace-pre-wrap break-words text-slate-900">
-                      {document.parsing_task.error_message || "--"}
-                    </p>
-                  </div>
-
-                  <div>
-                    <p className="text-sm text-slate-500">Markdown 结果</p>
-                    <pre className="mt-1 max-h-72 overflow-auto rounded-md bg-slate-950 p-4 text-sm leading-6 whitespace-pre-wrap break-words text-slate-100">
-                      {document.parsing_task.markdown || "--"}
-                    </pre>
-                  </div>
-
-                  <div className="space-y-3">
-                    <p className="text-sm text-slate-500">图像语义结果</p>
-                    {document.parsing_task.image_items.length ? (
-                      document.parsing_task.image_items.map((item) => (
-                        <div key={item.id} className="rounded-lg border border-slate-200 p-4">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <p className="font-medium text-slate-900">{item.source_key}</p>
-                            <Badge className={getImageItemStatusMeta(item.status).className}>
-                              {getImageItemStatusMeta(item.status).label}
-                            </Badge>
-                          </div>
-                          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                            <DetailItem label="提取图片 ID" value={String(item.extracted_image_id)} />
-                            <DetailItem label="结果来源" value={item.result_source ?? "--"} />
-                            <DetailItem label="语义任务 ID" value={item.semantic_task_id ?? "--"} breakAll />
-                            <DetailItem label="文件哈希" value={item.file_hash} breakAll />
-                          </div>
-                          <div className="mt-3">
-                            <p className="text-sm text-slate-500">语义描述</p>
-                            <p className="mt-1 whitespace-pre-wrap break-words text-slate-900">
-                              {item.semantic?.description || "--"}
-                            </p>
-                          </div>
-                          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                            <DetailItem label="结果模型" value={item.semantic?.result_model ?? "--"} />
-                            <DetailItem label="语义更新时间" value={formatOptionalDate(item.semantic?.updated_at)} />
-                          </div>
-                          {item.error_message ? <p className="mt-3 text-sm text-destructive">{item.error_message}</p> : null}
-                        </div>
-                      ))
-                    ) : (
-                      <p className="text-sm text-slate-500">当前任务还没有图像语义结果。</p>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <p className="text-sm text-slate-500">暂无解析任务。</p>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="pb-0">
-            <CardHeader>
-              <CardTitle>编辑文档</CardTitle>
+          <Card className="border-slate-200 bg-slate-50/60 pb-0 shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg text-slate-900">编辑文档</CardTitle>
+              <p className="text-sm text-slate-500">需要调整文档名称或描述时，再在这里修改。</p>
             </CardHeader>
             <form onSubmit={handleSubmit}>
               <CardContent className="grid gap-4 p-5 pt-0">
@@ -388,5 +338,4 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
     </div>
   )
 }
-
 
