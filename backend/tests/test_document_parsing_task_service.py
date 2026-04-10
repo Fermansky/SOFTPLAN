@@ -370,6 +370,37 @@ class DocumentParsingTaskServiceTests(TestCase):
         self.assertEqual(task.status, DocumentParsingTaskStatus.failed)
         self.assertEqual(task.error_message, "Image semantic analysis failed")
 
+    def test_recompute_document_parsing_task_state_fails_when_layout_failed(self):
+        task = DocumentParsingTask(
+            document_id=uuid4(),
+            file_id=uuid4(),
+            storage_bucket="softplan",
+            storage_key="documents/a.pdf",
+            target_layout_model="marker",
+            layout_model_key="marker",
+            image_model_key="vision-model",
+            layout_task_id=uuid4(),
+            status=DocumentParsingTaskStatus.running,
+        )
+        layout_task = LayoutAnalysisTask(
+            id=task.layout_task_id,
+            document_id=task.document_id,
+            file_id=task.file_id,
+            storage_bucket="softplan",
+            storage_key=task.storage_key,
+            target_layout_model="marker",
+            layout_model_key="marker",
+            status=LayoutAnalysisTaskStatus.failed,
+            error_message="layout crashed",
+        )
+        session = _SessionStub()
+
+        with patch.object(service, "get_document_parsing_image_items", return_value=[]):
+            service._recompute_document_parsing_task_state(session, task=task, layout_task=layout_task)
+
+        self.assertEqual(task.status, DocumentParsingTaskStatus.failed)
+        self.assertEqual(task.error_message, "layout crashed")
+
     def test_dispatch_image_items_uses_model_scoped_snapshot_without_creating_task(self):
         task = DocumentParsingTask(
             document_id=uuid4(),

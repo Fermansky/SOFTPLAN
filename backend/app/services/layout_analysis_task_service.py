@@ -31,23 +31,30 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class LayoutAnalysisTaskSubmissionResult:
+    """版面分析任务提交结果。"""
+
     task: LayoutAnalysisTask
     reused: bool
 
 
 @dataclass(frozen=True)
 class LayoutAnalysisModelSelection:
+    """版面分析模型选择结果。"""
+
     requested_model: str | None
     target_model: str
     model_key: str
 
 
 class UnsupportedLayoutAnalysisModelError(ValueError):
+    """请求了当前后端不支持的版面分析模型。"""
+
     pass
 
 
 
 def _to_bool(value: str | None, *, default: bool = False) -> bool:
+    """将环境变量风格的字符串解析为布尔值。"""
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
@@ -55,6 +62,7 @@ def _to_bool(value: str | None, *, default: bool = False) -> bool:
 
 
 def _normalize_optional_model(value: str | None) -> str | None:
+    """标准化可选模型名，去掉空白并把空字符串转为 `None`。"""
     if value is None:
         return None
     stripped = value.strip()
@@ -63,6 +71,12 @@ def _normalize_optional_model(value: str | None) -> str | None:
 
 
 def resolve_layout_analysis_model_selection(requested_model: str | None) -> LayoutAnalysisModelSelection:
+    """解析版面分析模型选择。
+
+    说明：
+    - 当前所有合法请求最终都会收敛为 `marker`。
+    - 非法模型名直接抛出异常，交由上层转换为 422。
+    """
     normalized_requested_model = _normalize_optional_model(requested_model)
     if normalized_requested_model is None:
         return LayoutAnalysisModelSelection(requested_model=None, target_model="marker", model_key="marker")
@@ -86,6 +100,7 @@ def get_active_layout_analysis_task_for_document(
     document_id: UUID,
     layout_model_key: str,
 ) -> LayoutAnalysisTask | None:
+    """获取文档当前仍在进行中的版面分析任务。"""
     statement = (
         select(LayoutAnalysisTask)
         .where(
@@ -105,6 +120,7 @@ def get_latest_succeeded_layout_analysis_task_for_file(
     file_id: UUID,
     layout_model_key: str,
 ) -> LayoutAnalysisTask | None:
+    """获取同文件最近一次成功完成的版面分析结果。"""
     statement = (
         select(LayoutAnalysisTask)
         .where(
@@ -128,6 +144,12 @@ def create_or_reuse_layout_analysis_task(
     requested_layout_model: str | None = None,
     force_layout_analysis: bool = False,
 ) -> LayoutAnalysisTaskSubmissionResult:
+    """创建或复用版面分析任务。
+
+    复用语义：
+    - 优先复用同文档下仍处于 `pending/running` 的活跃任务。
+    - 未强制重跑时，可复用同文件最近一次成功结果。
+    """
     model_selection = resolve_layout_analysis_model_selection(requested_layout_model)
     existing = get_active_layout_analysis_task_for_document(
         session,
@@ -179,6 +201,7 @@ def create_or_reuse_layout_analysis_task(
 
 
 def get_layout_analysis_task_by_id(session: Session, *, task_id: UUID) -> LayoutAnalysisTask | None:
+    """按任务 ID 查询版面分析任务。"""
     statement = select(LayoutAnalysisTask).where(LayoutAnalysisTask.id == task_id)
     return session.exec(statement).first()
 
@@ -190,6 +213,7 @@ def get_latest_layout_analysis_task_for_document_file(
     document_id: UUID,
     file_id: UUID,
 ) -> LayoutAnalysisTask | None:
+    """获取文档当前文件最近一次版面分析任务。"""
     statement = (
         select(LayoutAnalysisTask)
         .where(LayoutAnalysisTask.document_id == document_id, LayoutAnalysisTask.file_id == file_id)
@@ -200,6 +224,7 @@ def get_latest_layout_analysis_task_for_document_file(
 
 
 def _mark_task_failed(session: Session, *, task: LayoutAnalysisTask, error_message: str) -> None:
+    """将版面分析任务标记为失败并立即提交。"""
     now = utc_now()
     task.status = LayoutAnalysisTaskStatus.failed
     task.error_message = error_message
@@ -210,7 +235,25 @@ def _mark_task_failed(session: Session, *, task: LayoutAnalysisTask, error_messa
 
 
 
+def _synchronize_document_parsing_tasks(layout_task_id: UUID) -> None:
+    """同步受某个版面分析任务影响的聚合父任务。"""
+    try:
+        from .document_parsing_task_service import process_document_parsing_tasks_for_layout_task
+
+        process_document_parsing_tasks_for_layout_task(layout_task_id)
+    except Exception:
+        logger.exception(
+            "Failed to synchronize document parsing tasks after layout analysis task update, task_id=%s",
+            layout_task_id,
+        )
+
+
+
 def recover_orphaned_layout_analysis_tasks() -> int:
+    """将 worker 重启前遗留的 running 任务恢复为 failed。
+
+    恢复后会同步关联的 `DocumentParsingTask`，避免父任务长期停留在旧状态。
+    """
     with Session(engine) as session:
         statement = select(LayoutAnalysisTask).where(LayoutAnalysisTask.status == LayoutAnalysisTaskStatus.running)
         running_tasks = list(session.exec(statement).all())
@@ -218,19 +261,25 @@ def recover_orphaned_layout_analysis_tasks() -> int:
             return 0
 
         now = utc_now()
+        task_ids: list[UUID] = []
         for task in running_tasks:
             task.status = LayoutAnalysisTaskStatus.failed
             task.error_message = "Worker restarted before completion"
             task.finished_at = now
             task.updated_at = now
             session.add(task)
+            task_ids.append(task.id)
 
         session.commit()
-        return len(running_tasks)
+
+    for task_id in task_ids:
+        _synchronize_document_parsing_tasks(task_id)
+    return len(task_ids)
 
 
 
 def claim_next_pending_layout_analysis_task_id() -> UUID | None:
+    """抢占一个最早创建的 pending 版面分析任务。"""
     with Session(engine) as session:
         statement = (
             select(LayoutAnalysisTask)
@@ -257,6 +306,7 @@ def claim_next_pending_layout_analysis_task_id() -> UUID | None:
 
 
 def _is_reusable_layout_result_source(task: LayoutAnalysisTask | None) -> bool:
+    """判断历史版面分析任务是否可作为结果复用源。"""
     if task is None or task.status != LayoutAnalysisTaskStatus.succeeded:
         return False
     return task.markdown is not None and task.image_hashes is not None
@@ -264,6 +314,13 @@ def _is_reusable_layout_result_source(task: LayoutAnalysisTask | None) -> bool:
 
 
 def execute_layout_analysis_task(task_id: UUID, *, client: FileConvertServiceClient | None = None) -> None:
+    """执行单个已被 claim 为 running 的版面分析任务。
+
+    执行语义：
+    - 如存在可复用的历史成功结果，则直接复用其 markdown 与图片映射。
+    - 否则调用 file-convert-service 进行实时解析并持久化抽取图片。
+    - 无论成功还是失败，都会回灌关联的 `DocumentParsingTask` 聚合状态。
+    """
     file_convert_client = client or get_file_convert_service_client()
 
     with Session(engine) as session:
@@ -300,6 +357,7 @@ def execute_layout_analysis_task(task_id: UUID, *, client: FileConvertServiceCli
             if error is not None or parsing_result is None:
                 logger.warning("layout analysis task failed on file-convert-service, task_id=%s, error=%s", task_id, error)
                 _mark_task_failed(session, task=task, error_message=error or "file-convert-service parsing failed")
+                _synchronize_document_parsing_tasks(task.id)
                 return
 
             markdown = parsing_result.markdown
@@ -309,6 +367,7 @@ def execute_layout_analysis_task(task_id: UUID, *, client: FileConvertServiceCli
             except (ExtractedImagePersistenceError, SQLAlchemyError):
                 logger.exception("Failed to persist extracted images for layout analysis task, task_id=%s", task_id)
                 _mark_task_failed(session, task=task, error_message="Failed to persist extracted images")
+                _synchronize_document_parsing_tasks(task.id)
                 return
 
         now = utc_now()
@@ -329,18 +388,16 @@ def execute_layout_analysis_task(task_id: UUID, *, client: FileConvertServiceCli
             except SQLAlchemyError:
                 session.rollback()
                 logger.exception("Failed to mark layout analysis task failed after success commit error, task_id=%s", task_id)
+                return
+            _synchronize_document_parsing_tasks(task.id)
             return
 
-    try:
-        from .document_parsing_task_service import process_document_parsing_tasks_for_layout_task
-
-        process_document_parsing_tasks_for_layout_task(task_id)
-    except Exception:
-        logger.exception("Failed to synchronize document parsing tasks after layout analysis completion, task_id=%s", task_id)
+    _synchronize_document_parsing_tasks(task_id)
 
 
 
 def process_one_pending_layout_analysis_task(*, client: FileConvertServiceClient | None = None) -> bool:
+    """尝试处理一个待执行的版面分析任务。"""
     task_id = claim_next_pending_layout_analysis_task_id()
     if task_id is None:
         return False
@@ -350,12 +407,16 @@ def process_one_pending_layout_analysis_task(*, client: FileConvertServiceClient
 
 
 class LayoutAnalysisTaskWorker:
+    """版面分析任务轮询 worker。"""
+
     def __init__(self, *, poll_interval_seconds: float = 1.0) -> None:
+        """初始化 worker 轮询参数与停止信号。"""
         self.poll_interval_seconds = poll_interval_seconds
         self._stop_event = asyncio.Event()
         self._runner_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
+        """启动 worker，并在启动时恢复 orphaned running 任务。"""
         if self._runner_task is not None and not self._runner_task.done():
             return
 
@@ -368,6 +429,7 @@ class LayoutAnalysisTaskWorker:
         logger.info("layout analysis task worker started")
 
     async def stop(self) -> None:
+        """停止 worker 轮询循环。"""
         runner_task = self._runner_task
         if runner_task is None:
             return
@@ -378,6 +440,7 @@ class LayoutAnalysisTaskWorker:
         logger.info("layout analysis task worker stopped")
 
     async def _run_loop(self) -> None:
+        """持续轮询并处理待执行任务，直到收到停止信号。"""
         while not self._stop_event.is_set():
             try:
                 processed = await asyncio.to_thread(process_one_pending_layout_analysis_task)
@@ -396,6 +459,7 @@ class LayoutAnalysisTaskWorker:
 
 @lru_cache(maxsize=1)
 def get_layout_analysis_task_worker() -> LayoutAnalysisTaskWorker:
+    """获取版面分析任务 worker 单例。"""
     poll_interval_seconds = float(
         os.getenv(
             "LAYOUT_ANALYSIS_TASK_WORKER_POLL_INTERVAL_SECONDS",
@@ -407,6 +471,7 @@ def get_layout_analysis_task_worker() -> LayoutAnalysisTaskWorker:
 
 
 def is_layout_analysis_task_worker_enabled() -> bool:
+    """判断是否启用版面分析任务 worker。"""
     value = os.getenv("LAYOUT_ANALYSIS_TASK_WORKER_ENABLED")
     if value is None:
         value = os.getenv("DOCUMENT_PARSING_TASK_WORKER_ENABLED")

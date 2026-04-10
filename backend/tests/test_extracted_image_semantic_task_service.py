@@ -266,6 +266,28 @@ class _WorkerSessionStub:
         self.rolled_back = True
 
 
+class _RecoverySessionStub:
+    def __init__(self, tasks):
+        self.tasks = tasks
+        self.added = []
+        self.committed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def exec(self, statement):
+        return _ExecResult(all_values=self.tasks)
+
+    def add(self, item):
+        self.added.append(item)
+
+    def commit(self):
+        self.committed = True
+
+
 class ExtractedImageSemanticTaskExecutionTests(TestCase):
     def _build_running_task(self, *, overwrite_existing_snapshot: bool = False) -> ExtractedImageSemanticTask:
         return ExtractedImageSemanticTask(
@@ -350,6 +372,47 @@ class ExtractedImageSemanticTaskExecutionTests(TestCase):
         self.assertEqual(image.semantic_description_model, "old-model")
         self.assertNotIn(image, session.added)
         self.assertIn(task, session.added)
+
+    def test_recover_orphaned_tasks_synchronizes_document_parsing_tasks(self):
+        running_tasks = [
+            ExtractedImageSemanticTask(
+                id=uuid4(),
+                extracted_image_id=1,
+                status=ExtractedImageSemanticTaskStatus.running,
+                requested_model="request-model",
+                target_model="target-model",
+                target_model_key="target-model",
+                overwrite_existing_snapshot=False,
+                request_id="req-8",
+                prompt_path="backend/app/prompts/extracted_image_semantic.txt",
+            ),
+            ExtractedImageSemanticTask(
+                id=uuid4(),
+                extracted_image_id=2,
+                status=ExtractedImageSemanticTaskStatus.running,
+                requested_model="request-model",
+                target_model="target-model",
+                target_model_key="target-model",
+                overwrite_existing_snapshot=False,
+                request_id="req-9",
+                prompt_path="backend/app/prompts/extracted_image_semantic.txt",
+            ),
+        ]
+        session = _RecoverySessionStub(running_tasks)
+
+        with patch.object(service, "Session", return_value=session), patch.object(
+            service,
+            "_synchronize_document_parsing_tasks",
+        ) as synchronize_mock:
+            recovered = service.recover_orphaned_extracted_image_semantic_tasks()
+
+        self.assertEqual(recovered, 2)
+        self.assertTrue(session.committed)
+        self.assertEqual(synchronize_mock.call_count, 2)
+        synchronize_mock.assert_any_call(running_tasks[0].id)
+        synchronize_mock.assert_any_call(running_tasks[1].id)
+        self.assertEqual(running_tasks[0].status, ExtractedImageSemanticTaskStatus.failed)
+        self.assertEqual(running_tasks[1].status, ExtractedImageSemanticTaskStatus.failed)
 
     def test_execute_task_success_overwrites_existing_snapshot_when_requested(self):
         task = self._build_running_task(overwrite_existing_snapshot=True)

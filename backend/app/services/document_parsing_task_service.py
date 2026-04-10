@@ -1,3 +1,16 @@
+"""文档解析聚合任务服务。
+
+职责：
+1. 解析文档解析链路中的版面模型与图片语义模型选择规则。
+2. 负责任务创建/复用、图片项分发与聚合状态重算。
+3. 协调 `LayoutAnalysisTask`、`ExtractedImageSemanticTask` 与聚合父任务之间的状态同步。
+
+说明：
+- `DocumentParsingTask` 是严格聚合父任务，状态语义不等同于版面分析阶段本身。
+- 本模块只负责数据库编排与状态流转，不直接执行 PDF 解析或 LLM 识别。
+- 图片语义结果优先读取模型作用域快照，其次回退到成功的语义任务结果。
+"""
+
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -35,12 +48,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class DocumentParsingTaskSubmissionResult:
+    """文档解析任务提交结果。"""
+
     task: DocumentParsingTask
     reused: bool
 
 
 @dataclass(frozen=True)
 class DocumentParsingModelSelection:
+    """文档解析子阶段模型选择结果。"""
+
     requested_model: str | None
     target_model: str | None
     model_key: str
@@ -48,12 +65,16 @@ class DocumentParsingModelSelection:
 
 @dataclass(frozen=True)
 class DocumentParsingImageRef:
+    """版面分析产出的单张图片引用。"""
+
     source_key: str
     file_hash: str
 
 
 @dataclass(frozen=True)
 class DocumentParsingImageSemanticResult:
+    """聚合后的图片语义结果快照。"""
+
     description: str
     result_model: str | None
     source_task_id: UUID | None
@@ -62,6 +83,7 @@ class DocumentParsingImageSemanticResult:
 
 
 def _normalize_optional_model(value: str | None) -> str | None:
+    """标准化可选模型名，去掉空白并把空字符串转为 `None`。"""
     if value is None:
         return None
     stripped = value.strip()
@@ -70,6 +92,7 @@ def _normalize_optional_model(value: str | None) -> str | None:
 
 
 def resolve_document_parsing_image_model_selection(requested_model: str | None) -> DocumentParsingModelSelection:
+    """解析文档解析链路中的图片语义模型选择。"""
     normalized_requested_model = _normalize_optional_model(requested_model)
     target_model = resolve_extracted_image_semantic_model(normalized_requested_model)
     model_key = get_extracted_image_semantic_target_model_key(target_model)
@@ -82,6 +105,7 @@ def resolve_document_parsing_image_model_selection(requested_model: str | None) 
 
 
 def _build_image_refs_from_image_hashes(image_hashes: Mapping[str, str] | None) -> list[DocumentParsingImageRef]:
+    """将 `image_hashes` 映射转换为稳定的图片引用列表。"""
     if not image_hashes:
         return []
     return [
@@ -93,6 +117,7 @@ def _build_image_refs_from_image_hashes(image_hashes: Mapping[str, str] | None) 
 
 
 def _load_extracted_images_by_hash(session: Session, *, file_hashes: list[str]) -> dict[str, ExtractedImage]:
+    """按文件哈希批量加载已落库的抽取图片。"""
     normalized_hashes = [file_hash for file_hash in file_hashes if file_hash]
     if not normalized_hashes:
         return {}
@@ -108,6 +133,7 @@ def get_active_document_parsing_task_for_document(
     layout_model_key: str,
     image_model_key: str,
 ) -> DocumentParsingTask | None:
+    """获取文档当前仍在进行中的文档解析聚合任务。"""
     statement = (
         select(DocumentParsingTask)
         .where(
@@ -129,6 +155,7 @@ def get_latest_succeeded_document_parsing_task_for_file(
     layout_model_key: str,
     image_model_key: str,
 ) -> DocumentParsingTask | None:
+    """获取同文件最近一次完整成功的文档解析结果。"""
     statement = (
         select(DocumentParsingTask)
         .where(
@@ -154,6 +181,12 @@ def create_or_reuse_document_parsing_task(
     requested_image_model: str | None = None,
     force_layout_analysis: bool = False,
 ) -> DocumentParsingTaskSubmissionResult:
+    """创建或复用文档解析聚合任务。
+
+    复用语义：
+    - 优先复用同文档、同模型组合下仍处于 `pending/running` 的活跃任务。
+    - 未强制重跑版面分析时，可复用同文件最近一次完整成功结果。
+    """
     layout_selection = resolve_layout_analysis_model_selection(requested_layout_model)
     image_selection = resolve_document_parsing_image_model_selection(requested_image_model)
 
@@ -223,6 +256,7 @@ def create_or_reuse_document_parsing_task(
 
 
 def get_document_parsing_task_by_id(session: Session, *, task_id: UUID) -> DocumentParsingTask | None:
+    """按任务 ID 查询文档解析聚合任务。"""
     statement = select(DocumentParsingTask).where(DocumentParsingTask.id == task_id)
     return session.exec(statement).first()
 
@@ -234,6 +268,7 @@ def get_latest_document_parsing_task_for_document_file(
     document_id: UUID,
     file_id: UUID,
 ) -> DocumentParsingTask | None:
+    """获取文档当前文件最近一次文档解析任务。"""
     statement = (
         select(DocumentParsingTask)
         .where(DocumentParsingTask.document_id == document_id, DocumentParsingTask.file_id == file_id)
@@ -249,6 +284,7 @@ def get_latest_succeeded_document_parsing_task_for_document_file(
     document_id: UUID,
     file_id: UUID,
 ) -> DocumentParsingTask | None:
+    """获取文档当前文件最近一次成功的文档解析任务。"""
     statement = (
         select(DocumentParsingTask)
         .where(
@@ -267,6 +303,12 @@ def get_default_document_parsing_task_for_document_file(
     document_id: UUID,
     file_id: UUID,
 ) -> DocumentParsingTask | None:
+    """获取对外默认展示的文档解析任务。
+
+    说明：
+    - 若最新任务未失败，则直接返回最新任务。
+    - 若最新任务失败，则优先回退到最近一次成功任务。
+    """
     latest_task = get_latest_document_parsing_task_for_document_file(
         session,
         document_id=document_id,
@@ -288,6 +330,7 @@ def get_default_document_parsing_task_for_document_file(
 
 
 def get_document_parsing_image_items(session: Session, *, task_id: UUID) -> list[DocumentParsingImageItem]:
+    """获取聚合任务下的全部图片项，按创建顺序返回。"""
     statement = (
         select(DocumentParsingImageItem)
         .where(DocumentParsingImageItem.document_parsing_task_id == task_id)
@@ -298,6 +341,7 @@ def get_document_parsing_image_items(session: Session, *, task_id: UUID) -> list
 
 
 def get_layout_task_for_document_parsing_task(session: Session, *, task: DocumentParsingTask) -> LayoutAnalysisTask | None:
+    """加载聚合任务绑定的版面分析任务。"""
     return session.get(LayoutAnalysisTask, task.layout_task_id)
 
 
@@ -308,6 +352,12 @@ def get_document_parsing_image_semantic_result(
     item: DocumentParsingImageItem,
     image_model_key: str,
 ) -> DocumentParsingImageSemanticResult | None:
+    """获取图片项当前可见的语义结果。
+
+    读取优先级：
+    - 先读模型作用域快照。
+    - 若无快照，则回退到绑定且已成功的语义任务。
+    """
     snapshot = _get_semantic_snapshot(
         session,
         extracted_image_id=item.extracted_image_id,
@@ -345,6 +395,7 @@ def _get_semantic_snapshot(
     extracted_image_id: int,
     target_model_key: str,
 ) -> ExtractedImageSemanticSnapshot | None:
+    """获取图片在指定目标模型下最近的语义快照。"""
     statement = (
         select(ExtractedImageSemanticSnapshot)
         .where(
@@ -358,6 +409,7 @@ def _get_semantic_snapshot(
 
 
 def _refresh_image_item_statuses_from_semantic_tasks(session: Session, *, task_id: UUID) -> None:
+    """根据绑定的语义任务状态回刷图片项状态。"""
     for item in get_document_parsing_image_items(session, task_id=task_id):
         if item.semantic_task_id is None:
             continue
@@ -383,6 +435,7 @@ def _refresh_image_item_statuses_from_semantic_tasks(session: Session, *, task_i
 
 
 def _mark_task_failed(task: DocumentParsingTask, *, error_message: str) -> None:
+    """将聚合任务标记为失败并补齐失败时间戳。"""
     now = utc_now()
     task.status = DocumentParsingTaskStatus.failed
     task.error_message = error_message
@@ -399,6 +452,13 @@ def _recompute_document_parsing_task_state(
     task: DocumentParsingTask,
     layout_task: LayoutAnalysisTask | None,
 ) -> None:
+    """依据版面任务和图片项状态重算聚合任务状态。
+
+    聚合语义：
+    - layout 不存在或失败时，父任务失败。
+    - layout 成功后，全部必要图片成功才算最终成功。
+    - 只要仍有必要图片未完成，则父任务保持 running。
+    """
     now = utc_now()
     items = get_document_parsing_image_items(session, task_id=task.id)
     task.image_total_count = len(items)
@@ -444,6 +504,12 @@ def _recompute_document_parsing_task_state(
 
 
 def _dispatch_image_items_if_needed(session: Session, *, task: DocumentParsingTask, layout_task: LayoutAnalysisTask) -> None:
+    """按版面分析产出的图片列表初始化缺失的图片项。
+
+    说明：
+    - 已存在的图片项不会重复创建。
+    - 如命中语义快照则直接生成 succeeded 图片项，否则提交/复用语义任务。
+    """
     existing_items = get_document_parsing_image_items(session, task_id=task.id)
     existing_items_by_source_key = {item.source_key: item for item in existing_items}
 
@@ -511,6 +577,13 @@ def _dispatch_image_items_if_needed(session: Session, *, task: DocumentParsingTa
 
 
 def synchronize_document_parsing_task(task_id: UUID) -> None:
+    """同步单个文档解析聚合任务的全部子状态。
+
+    同步步骤：
+    - 若版面分析已成功，先补齐需要的图片项。
+    - 然后回刷图片项状态。
+    - 最后依据最新子状态重算聚合任务状态。
+    """
     with Session(engine) as session:
         task = session.get(DocumentParsingTask, task_id)
         if task is None:
@@ -534,6 +607,7 @@ def synchronize_document_parsing_task(task_id: UUID) -> None:
 
 
 def process_document_parsing_tasks_for_layout_task(layout_task_id: UUID) -> None:
+    """同步某个版面分析任务绑定的全部聚合任务。"""
     with Session(engine) as session:
         statement = select(DocumentParsingTask.id).where(DocumentParsingTask.layout_task_id == layout_task_id)
         task_ids = list(session.exec(statement).all())
@@ -543,6 +617,7 @@ def process_document_parsing_tasks_for_layout_task(layout_task_id: UUID) -> None
 
 
 def process_document_parsing_tasks_for_semantic_task(semantic_task_id: UUID) -> None:
+    """同步某个图片语义任务影响到的全部聚合任务。"""
     with Session(engine) as session:
         statement = select(DocumentParsingImageItem.document_parsing_task_id).where(
             DocumentParsingImageItem.semantic_task_id == semantic_task_id
