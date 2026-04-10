@@ -66,6 +66,13 @@ export type ApiDocumentDetail = ApiDocument & {
   parsing_task: ApiDocumentParsingTask | null
 }
 
+export type CreateDocumentParsingTaskPayload = {
+  document_id: string
+  layout_model?: string | null
+  image_model?: string | null
+  force_layout_analysis?: boolean
+}
+
 export type UpdateDocumentPayload = {
   name: string
   description: string
@@ -148,4 +155,40 @@ export async function updateDocument(documentId: string, payload: UpdateDocument
   }
 
   return (await response.json()) as ApiDocument
+}
+
+export async function createDocumentParsingTask(
+  payload: CreateDocumentParsingTaskPayload
+): Promise<ApiDocumentParsingTask> {
+  const response = await fetch(`${getApiBaseUrl()}/document-parsing/tasks`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(payload),
+  })
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, `创建解析任务失败（HTTP ${response.status}）`))
+  }
+
+  return (await response.json()) as ApiDocumentParsingTask
+}
+
+export async function fetchDocumentParsingTask(
+  taskId: string,
+  signal?: AbortSignal
+): Promise<ApiDocumentParsingTask> {
+  const response = await fetch(`${getApiBaseUrl()}/document-parsing/tasks/${taskId}`, {
+    method: "GET",
+    signal,
+    headers: { Accept: "application/json" },
+  })
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, `加载解析任务失败（HTTP ${response.status}）`))
+  }
+
+  return (await response.json()) as ApiDocumentParsingTask
 }

@@ -5,6 +5,16 @@ import { FormEvent, useCallback, useEffect, useState } from "react"
 import { toast } from "sonner"
 
 import { DetailPageHeader, DetailPageHeaderSkeleton } from "@/components/detail-page-header"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
@@ -15,7 +25,10 @@ import { Textarea } from "@/components/ui/textarea"
 import {
   ApiDocumentDetail,
   ApiDocumentParsingTask,
+  CreateDocumentParsingTaskPayload,
+  createDocumentParsingTask,
   fetchDocument,
+  fetchDocumentParsingTask,
   formatDate,
   getApiBaseUrl,
   updateDocument,
@@ -99,6 +112,10 @@ function SecondaryMetaItem({ label, value }: { label: string; value: string }) {
   )
 }
 
+function isParsingActive(status: ApiDocumentParsingTask["status"] | null | undefined) {
+  return status === "pending" || status === "running"
+}
+
 export default function DocumentDetailPage({ params }: { params: { projectId: string; documentId: string } }) {
   const apiBase = getApiBaseUrl()
 
@@ -106,11 +123,16 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
+  const [isParsingDialogOpen, setIsParsingDialogOpen] = useState(false)
+  const [isOverwriteConfirmOpen, setIsOverwriteConfirmOpen] = useState(false)
 
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
   const [formError, setFormError] = useState("")
   const [isSaving, setIsSaving] = useState(false)
+  const [parsingImageModel, setParsingImageModel] = useState("")
+  const [parsingFormError, setParsingFormError] = useState("")
+  const [isStartingParsing, setIsStartingParsing] = useState(false)
 
   const loadDocument = useCallback(
     async (signal?: AbortSignal) => {
@@ -143,6 +165,79 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
     return () => controller.abort()
   }, [loadDocument])
 
+  useEffect(() => {
+    const task = document?.parsing_task
+    if (!task || !isParsingActive(task.status)) {
+      return
+    }
+
+    const taskId = task.id
+    let cancelled = false
+    let inFlight = false
+    let lastStatus: ApiDocumentParsingTask["status"] = task.status
+    const controller = new AbortController()
+    const intervalId = window.setInterval(() => {
+      void pollTask()
+    }, 2000)
+
+    async function pollTask() {
+      if (cancelled || inFlight) {
+        return
+      }
+
+      inFlight = true
+      try {
+        const latestTask = await fetchDocumentParsingTask(taskId, controller.signal)
+        if (cancelled) {
+          return
+        }
+
+        setDocument((current) => (current ? { ...current, parsing_task: latestTask } : current))
+
+        const reachedTerminal =
+          isParsingActive(lastStatus) && (latestTask.status === "succeeded" || latestTask.status === "failed")
+        lastStatus = latestTask.status
+
+        if (!reachedTerminal) {
+          return
+        }
+
+        window.clearInterval(intervalId)
+
+        if (latestTask.status === "succeeded") {
+          toast.success("文档解析完成", {
+            description: "解析结果已更新。",
+          })
+        } else {
+          toast.error("文档解析失败", {
+            description: latestTask.error_message || "任务执行失败，请稍后重试。",
+          })
+        }
+
+        const syncedDocument = await fetchDocument(params.documentId)
+        if (cancelled || syncedDocument.project_id !== params.projectId) {
+          return
+        }
+
+        setDocument(syncedDocument)
+      } catch (pollError) {
+        if ((pollError as Error).name === "AbortError") {
+          return
+        }
+      } finally {
+        inFlight = false
+      }
+    }
+
+    void pollTask()
+
+    return () => {
+      cancelled = true
+      controller.abort()
+      window.clearInterval(intervalId)
+    }
+  }, [document?.parsing_task?.id, document?.parsing_task?.status, params.documentId, params.projectId])
+
   function openEditDialog() {
     if (!document) return
     setName(document.name)
@@ -158,7 +253,71 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
     }
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  function openParsingDialog() {
+    setParsingImageModel(document?.parsing_task?.requested_image_model ?? "")
+    setParsingFormError("")
+    setIsParsingDialogOpen(true)
+  }
+
+  function handleParsingDialogOpenChange(nextOpen: boolean) {
+    setIsParsingDialogOpen(nextOpen)
+    if (!nextOpen) {
+      setParsingFormError("")
+      setIsOverwriteConfirmOpen(false)
+    }
+  }
+
+  async function startDocumentParsing(forceLayoutAnalysis: boolean) {
+    const normalizedImageModel = parsingImageModel.trim()
+    const payload: CreateDocumentParsingTaskPayload = {
+      document_id: params.documentId,
+      layout_model: "marker",
+      image_model: normalizedImageModel || null,
+      force_layout_analysis: forceLayoutAnalysis,
+    }
+
+    setParsingFormError("")
+    setIsStartingParsing(true)
+
+    try {
+      const createdTask = await createDocumentParsingTask(payload)
+      setDocument((current) => (current ? { ...current, parsing_task: createdTask } : current))
+      setIsParsingDialogOpen(false)
+      setIsOverwriteConfirmOpen(false)
+
+      if (isParsingActive(createdTask.status)) {
+        toast.success(createdTask.reused ? "已连接解析任务" : "已开始解析", {
+          description: createdTask.reused ? "将继续跟踪现有解析任务进度。" : "正在处理文档，请稍候。",
+        })
+      } else if (createdTask.status === "succeeded") {
+        toast.success("解析结果已就绪", {
+          description: "已获得最新的文档解析结果。",
+        })
+      } else if (createdTask.status === "failed") {
+        toast.error("解析任务失败", {
+          description: createdTask.error_message || "任务创建后执行失败。",
+        })
+      }
+    } catch (taskCreateError) {
+      const message = taskCreateError instanceof Error ? taskCreateError.message : "创建解析任务失败，请重试。"
+      setParsingFormError(message)
+    } finally {
+      setIsStartingParsing(false)
+    }
+  }
+
+  async function handleParsingSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    if (document?.parsing_task?.status === "succeeded") {
+      setIsOverwriteConfirmOpen(true)
+      return
+    }
+
+    await startDocumentParsing(false)
+  }
+
+  async function handleEditSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
     const normalizedName = name.trim()
@@ -202,6 +361,8 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
     }
   }
 
+  const isCurrentParsingActive = isParsingActive(document?.parsing_task?.status)
+
   return (
     <div className={PAGE_CONTAINER_CLASS}>
       {loading ? (
@@ -217,6 +378,11 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
           description="查看文档基础信息，并在当前项目下修改名称和描述。"
           actions={
             <>
+              {document ? (
+                <Button type="button" onClick={openParsingDialog} disabled={isCurrentParsingActive}>
+                  {isCurrentParsingActive ? "解析中..." : "开始解析"}
+                </Button>
+              ) : null}
               {document ? (
                 <Button asChild variant="outline">
                   <a href={`${apiBase}/documents/${document.id}/download`} target="_blank" rel="noreferrer">
@@ -314,7 +480,7 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
 
       <Dialog open={isEditDialogOpen} onOpenChange={handleEditDialogOpenChange}>
         <DialogContent className="sm:max-w-lg">
-          <form onSubmit={handleSubmit} className="grid gap-4">
+          <form onSubmit={handleEditSubmit} className="grid gap-4">
             <DialogHeader>
               <DialogTitle>编辑文档</DialogTitle>
               <DialogDescription>修改文档名称和描述，保存后会立即同步到当前页面。</DialogDescription>
@@ -361,6 +527,72 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
           </form>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={isParsingDialogOpen} onOpenChange={handleParsingDialogOpenChange}>
+        <DialogContent className="sm:max-w-lg">
+          <form onSubmit={handleParsingSubmit} className="grid gap-4">
+            <DialogHeader>
+              <DialogTitle>新建解析任务</DialogTitle>
+              <DialogDescription>创建后会开始处理当前文档，并在任务运行期间自动更新状态。</DialogDescription>
+            </DialogHeader>
+
+            <div className="grid gap-2">
+              <label htmlFor="document-layout-model" className="text-sm font-medium text-slate-700">
+                版面模型
+              </label>
+              <Input id="document-layout-model" value="marker" disabled readOnly />
+              <p className="text-xs text-slate-500">当前仅支持 `marker` 作为版面分析模型。</p>
+            </div>
+
+            <div className="grid gap-2">
+              <label htmlFor="document-image-model" className="text-sm font-medium text-slate-700">
+                图像模型
+              </label>
+              <Input
+                id="document-image-model"
+                value={parsingImageModel}
+                onChange={(event) => setParsingImageModel(event.target.value)}
+                placeholder="可选，留空则使用系统默认模型"
+                disabled={isStartingParsing}
+              />
+              <p className="text-xs text-slate-500">该参数用于控制图片语义分析，留空会使用默认模型配置。</p>
+            </div>
+
+            {parsingFormError ? <p className="text-sm text-destructive">{parsingFormError}</p> : null}
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => handleParsingDialogOpenChange(false)}
+                disabled={isStartingParsing}
+              >
+                取消
+              </Button>
+              <Button type="submit" disabled={isStartingParsing}>
+                {isStartingParsing ? "创建中..." : "开始解析"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={isOverwriteConfirmOpen} onOpenChange={setIsOverwriteConfirmOpen}>
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>覆盖现有解析结果？</AlertDialogTitle>
+            <AlertDialogDescription>
+              当前文档已经有成功的解析结果。继续后会重新发起解析任务，并在完成后覆盖当前展示的结果状态。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isStartingParsing}>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void startDocumentParsing(true)} disabled={isStartingParsing}>
+              {isStartingParsing ? "创建中..." : "确认覆盖并解析"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
