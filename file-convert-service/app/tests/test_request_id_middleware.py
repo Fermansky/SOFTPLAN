@@ -59,3 +59,16 @@ class FileConvertRequestIdMiddlewareTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["X-Request-ID"], "legacy-task-1")
+
+    def test_request_id_header_takes_precedence_over_legacy_header(self):
+        self.client.app.dependency_overrides[get_minio_storage] = lambda: _StorageStub()
+        self.client.app.dependency_overrides[get_marker_pdf_to_markdown_converter] = lambda: _ConverterStub()
+
+        response = self.client.post(
+            "/internal/converters/pdf-to-markdown",
+            json={"storage_key": "a.pdf"},
+            headers={"X-Request-ID": "request-1", "X-Convert-Task-Id": "legacy-task-1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["X-Request-ID"], "request-1")
