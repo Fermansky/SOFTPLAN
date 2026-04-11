@@ -722,7 +722,7 @@ export default function ModelSettingsPage() {
           <div className="flex h-full min-h-0 flex-col xl:overflow-hidden">
             <div className="min-h-0 flex-1 xl:overflow-y-auto xl:[scrollbar-gutter:stable]">
               <div className="space-y-4 px-px xl:pr-3 xl:py-3">
-          <Card className="shrink-0 xl:pb-0">
+          <Card className="shrink-0">
             <CardHeader>
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div className="space-y-1">

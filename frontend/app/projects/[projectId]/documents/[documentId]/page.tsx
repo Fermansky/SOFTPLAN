@@ -94,6 +94,46 @@ function formatOptionalDate(value: string | null | undefined) {
   return value ? formatDate(value) : "--"
 }
 
+function estimateMarkdownTextLength(markdown: string | null | undefined) {
+  if (!markdown) {
+    return 0
+  }
+
+  const plainText = markdown
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[.*?\]\(.*?\)/g, " ")
+    .replace(/\[([^\]]+)\]\((.*?)\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/[*_~>#-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+
+  return plainText.length
+}
+
+function getMarkdownSummary(markdown: string | null | undefined, maxLength = 140) {
+  if (!markdown) {
+    return ""
+  }
+
+  const plainText = markdown
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[.*?\]\(.*?\)/g, " ")
+    .replace(/\[([^\]]+)\]\((.*?)\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/[*_~>#-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+
+  if (!plainText) {
+    return ""
+  }
+
+  return plainText.length > maxLength ? `${plainText.slice(0, maxLength)}...` : plainText
+}
+
 function getTaskStatusMeta(status: ApiDocumentParsingTask["status"]) {
   const map: Record<ApiDocumentParsingTask["status"], { label: string; className: string }> = {
     pending: { label: "待处理", className: "bg-amber-100 text-amber-800 hover:bg-amber-100" },
@@ -118,6 +158,14 @@ function isParsingActive(status: ApiDocumentParsingTask["status"] | null | undef
   return status === "pending" || status === "running"
 }
 
+function getParsingPrimaryActionLabel(task: ApiDocumentParsingTask | null) {
+  if (!task) {
+    return "开始解析"
+  }
+
+  return isParsingActive(task.status) ? "解析中..." : "重新解析"
+}
+
 const SELECT_CLASS_NAME =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none transition-all focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50"
 
@@ -134,6 +182,7 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
   const [isParsingDialogOpen, setIsParsingDialogOpen] = useState(false)
   const [isOverwriteConfirmOpen, setIsOverwriteConfirmOpen] = useState(false)
+  const [isResultPreviewOpen, setIsResultPreviewOpen] = useState(false)
 
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
@@ -157,6 +206,12 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
   const showSelectedConfigFallbackOption = Boolean(
     parsingImageLlmConfigId && !selectedParsingLlmConfig && selectedTaskParsingLlmConfig?.image_llm_config_id
   )
+  const parsingTask = document?.parsing_task ?? null
+  const isCurrentParsingActive = isParsingActive(parsingTask?.status)
+  const parsingPrimaryActionLabel = getParsingPrimaryActionLabel(parsingTask)
+  const hasParsingResult = Boolean(parsingTask?.markdown)
+  const parsingEstimatedTextLength = estimateMarkdownTextLength(parsingTask?.markdown)
+  const parsingResultSummary = getMarkdownSummary(parsingTask?.markdown)
 
   const loadDocument = useCallback(
     async (signal?: AbortSignal) => {
@@ -422,8 +477,6 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
     }
   }
 
-  const isCurrentParsingActive = isParsingActive(document?.parsing_task?.status)
-
   return (
     <div className={PAGE_CONTAINER_CLASS}>
       {loading ? (
@@ -439,11 +492,6 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
           description="查看文档基础信息，并在当前项目下修改名称和描述。"
           actions={
             <>
-              {document ? (
-                <Button type="button" onClick={openParsingDialog} disabled={isCurrentParsingActive}>
-                  {isCurrentParsingActive ? "解析中..." : "开始解析"}
-                </Button>
-              ) : null}
               {document ? (
                 <Button asChild variant="outline">
                   <a href={`${apiBase}/documents/${document.id}/download`} target="_blank" rel="noreferrer">
@@ -510,30 +558,73 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <CardTitle className="text-lg text-slate-950">解析任务</CardTitle>
-                    <p className="mt-1 text-sm text-slate-500">显示默认关联任务的最新状态与关键时间。</p>
+                    <p className="mt-1 text-sm text-slate-500">显示当前默认解析任务的关键状态、统计信息与结果入口。</p>
                   </div>
-                  {document.parsing_task ? (
-                    <Badge className={getTaskStatusMeta(document.parsing_task.status).className}>
-                      {getTaskStatusMeta(document.parsing_task.status).label}
+                  {parsingTask ? (
+                    <Badge className={getTaskStatusMeta(parsingTask.status).className}>
+                      {getTaskStatusMeta(parsingTask.status).label}
                     </Badge>
                   ) : null}
                 </div>
               </CardHeader>
-              <CardContent className="p-5 pt-0">
-                {document.parsing_task ? (
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <SecondaryMetaItem label="创建时间" value={formatDate(document.parsing_task.created_at)} />
-                    <SecondaryMetaItem label="开始时间" value={formatOptionalDate(document.parsing_task.started_at)} />
-                    <SecondaryMetaItem label="完成时间" value={formatOptionalDate(document.parsing_task.finished_at)} />
-                    <SecondaryMetaItem label="更新时间" value={formatDate(document.parsing_task.updated_at)} />
-                  </div>
+              <CardContent className="space-y-4 p-5 pt-0">
+                {parsingTask ? (
+                  <>
+                    <div className="space-y-3">
+                      <p className="text-xs uppercase tracking-[0.18em] text-slate-500">关键时间</p>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <SecondaryMetaItem label="创建时间" value={formatDate(parsingTask.created_at)} />
+                        <SecondaryMetaItem label="完成时间" value={formatOptionalDate(parsingTask.finished_at)} />
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <p className="text-xs uppercase tracking-[0.18em] text-slate-500">解析元数据</p>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <SecondaryMetaItem
+                          label="图片解析"
+                          value={`${parsingTask.image_succeeded_count} / ${parsingTask.image_total_count}`}
+                        />
+                        <SecondaryMetaItem label="文本字数（估算）" value={String(parsingEstimatedTextLength)} />
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                      <p className="text-xs uppercase tracking-[0.18em] text-slate-500">结果摘要</p>
+                      {hasParsingResult ? (
+                        <>
+                          <p className="mt-3 text-sm font-medium text-slate-800">已生成可查看的解析结果</p>
+                          <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-slate-600">
+                            {parsingResultSummary || "当前结果可预览，但摘要内容为空。"}
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="mt-3 text-sm font-medium text-slate-700">当前暂无可查看结果</p>
+                          <p className="mt-2 text-sm text-slate-500">
+                            {parsingTask.error_message || "任务完成后，这里会显示解析结果摘要和查看入口。"}
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  </>
                 ) : (
                   <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-4">
                     <p className="text-sm font-medium text-slate-700">暂无解析任务</p>
-                    <p className="mt-1 text-sm text-slate-500">当前文档还没有可展示的默认解析任务状态。</p>
+                    <p className="mt-1 text-sm text-slate-500">当前文档还没有可展示的默认解析任务状态，可以直接从这里开始解析。</p>
                   </div>
                 )}
               </CardContent>
+              <CardFooter className="justify-end gap-2">
+                {hasParsingResult ? (
+                  <Button type="button" variant="outline" onClick={() => setIsResultPreviewOpen(true)}>
+                    查看结果
+                  </Button>
+                ) : null}
+                <Button type="button" onClick={openParsingDialog} disabled={isCurrentParsingActive}>
+                  {parsingPrimaryActionLabel}
+                </Button>
+              </CardFooter>
             </Card>
           </div>
         </div>
@@ -586,6 +677,31 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isResultPreviewOpen} onOpenChange={setIsResultPreviewOpen}>
+        <DialogContent className="sm:max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>解析结果预览</DialogTitle>
+            <DialogDescription>
+              {parsingTask
+                ? `当前展示任务状态为 ${getTaskStatusMeta(parsingTask.status).label}，结果时间：${formatOptionalDate(parsingTask.finished_at)}。`
+                : "当前没有可展示的解析结果。"}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="max-h-[70vh] overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-6 text-slate-700">
+              {parsingTask?.markdown || "暂无解析结果。"}
+            </pre>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setIsResultPreviewOpen(false)}>
+              关闭
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
