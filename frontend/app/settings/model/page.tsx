@@ -789,7 +789,7 @@ export default function ModelSettingsPage() {
                 </div>
               </CardContent>
             ) : (
-              <form onSubmit={handleSubmit}>
+              <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
                 <CardContent className="grid gap-4 md:grid-cols-2">
                   <div className="grid gap-2">
                     <Label htmlFor="llm-config-code">配置代号</Label>
@@ -940,7 +940,7 @@ export default function ModelSettingsPage() {
 
                   {formError ? <p className="md:col-span-2 text-sm text-destructive">{formError}</p> : null}
                 </CardContent>
-                <CardFooter className="flex flex-col items-stretch justify-between gap-3 border-t border-slate-200 bg-slate-50 sm:flex-row sm:items-center">
+                <CardFooter className="flex flex-col items-stretch justify-between gap-3 border-t border-slate-200 bg-slate-50 mt-3 sm:flex-row sm:items-center">
                   <div className="flex flex-wrap gap-2">
                     {!isCreateMode && detail ? (
                       <AlertDialog>

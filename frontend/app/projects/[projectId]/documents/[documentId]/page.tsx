@@ -1,6 +1,7 @@
 ﻿"use client"
 
 import Link from "next/link"
+import { basename } from "path"
 import { FormEvent, useCallback, useEffect, useState } from "react"
 import { toast } from "sonner"
 
@@ -134,6 +135,46 @@ function getMarkdownSummary(markdown: string | null | undefined, maxLength = 140
   return plainText.length > maxLength ? `${plainText.slice(0, maxLength)}...` : plainText
 }
 
+function normalizeImageAltText(value: string) {
+  return value.replace(/\s+/g, " ").replace(/[\[\]]/g, " ").trim()
+}
+
+function enhanceMarkdownImageAltText(task: ApiDocumentParsingTask | null) {
+  if (!task?.markdown) {
+    return task?.markdown ?? ""
+  }
+
+  const descriptionsByKey = new Map<string, string>()
+
+  for (const item of task.image_items) {
+    const description = normalizeImageAltText(item.semantic?.description ?? "")
+    if (!description) {
+      continue
+    }
+
+    descriptionsByKey.set(item.source_key, description)
+
+    const sourceKeyBasename = basename(item.source_key)
+    if (sourceKeyBasename) {
+      descriptionsByKey.set(sourceKeyBasename, description)
+    }
+  }
+
+  return task.markdown.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, altText: string, rawPath: string) => {
+    if (altText.trim()) {
+      return match
+    }
+
+    const normalizedPath = rawPath.trim()
+    const imageDescription = descriptionsByKey.get(normalizedPath) ?? descriptionsByKey.get(basename(normalizedPath))
+    if (!imageDescription) {
+      return match
+    }
+
+    return `![${imageDescription}](${rawPath})`
+  })
+}
+
 function getTaskStatusMeta(status: ApiDocumentParsingTask["status"]) {
   const map: Record<ApiDocumentParsingTask["status"], { label: string; className: string }> = {
     pending: { label: "待处理", className: "bg-amber-100 text-amber-800 hover:bg-amber-100" },
@@ -212,6 +253,7 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
   const hasParsingResult = Boolean(parsingTask?.markdown)
   const parsingEstimatedTextLength = estimateMarkdownTextLength(parsingTask?.markdown)
   const parsingResultSummary = getMarkdownSummary(parsingTask?.markdown)
+  const enhancedPreviewMarkdown = enhanceMarkdownImageAltText(parsingTask)
 
   const loadDocument = useCallback(
     async (signal?: AbortSignal) => {
@@ -693,7 +735,7 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
 
           <div className="max-h-[70vh] overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-4">
             <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-6 text-slate-700">
-              {parsingTask?.markdown || "暂无解析结果。"}
+              {enhancedPreviewMarkdown || "暂无解析结果。"}
             </pre>
           </div>
 
