@@ -105,11 +105,13 @@ class ExtractedImageSemanticTaskServiceTests(TestCase):
             session,
             extracted_image_id=1,
             target_model_key="request-model",
+            llm_config_key="config-1",
             overwrite_existing_snapshot=True,
         )
 
         self.assertEqual(result, existing)
         where_clause = str(session.last_statement.whereclause)
+        self.assertIn("extracted_image_semantic_tasks.llm_config_key", where_clause)
         self.assertIn("extracted_image_semantic_tasks.overwrite_existing_snapshot", where_clause)
         self.assertIn("true", where_clause.lower())
 
@@ -187,6 +189,28 @@ class ExtractedImageSemanticTaskServiceTests(TestCase):
 
         self.assertFalse(result.reused)
         self.assertTrue(result.task.overwrite_existing_snapshot)
+
+    def test_create_or_reuse_task_persists_explicit_llm_config_selection(self):
+        session = _SessionStub(existing_task=None)
+        config_id = uuid4()
+
+        with patch.object(service, "get_extracted_image_semantic_prompt_snapshot", return_value=("prompt-path", "hash-1")), patch.object(
+            service,
+            "resolve_llm_config",
+            return_value=SimpleNamespace(id=config_id, code="vision-config"),
+        ):
+            result = service.create_or_reuse_extracted_image_semantic_task(
+                session,
+                extracted_image=self._build_image(),
+                requested_model="request-model",
+                request_id="req-3b",
+                config_id=config_id,
+            )
+
+        self.assertFalse(result.reused)
+        self.assertEqual(result.task.llm_config_id, config_id)
+        self.assertEqual(result.task.llm_config_code, "vision-config")
+        self.assertEqual(result.task.llm_config_key, str(config_id))
 
     def test_create_or_reuse_task_handles_integrity_conflict_with_same_overwrite_flag(self):
         existing = self._build_task(overwrite_existing_snapshot=True)
@@ -466,4 +490,32 @@ class ExtractedImageSemanticTaskExecutionTests(TestCase):
         self.assertEqual(task.error_message, "upstream failed")
         self.assertEqual(image.semantic_description, "existing description")
         self.assertEqual(image.semantic_description_model, "old-model")
+
+    def test_execute_task_uses_bound_llm_config_when_client_not_injected(self):
+        config_id = uuid4()
+        task = self._build_running_task(overwrite_existing_snapshot=False)
+        task.llm_config_id = config_id
+        task.llm_config_code = "vision-config"
+        task.llm_config_key = str(config_id)
+        image = self._build_image()
+        session = _WorkerSessionStub(task=task, image=image)
+        client = object()
+
+        with patch.object(service, "Session", return_value=session), patch.object(
+            service,
+            "get_llm_service_client",
+            return_value=client,
+        ) as get_client_mock, patch.object(service, "_synchronize_document_parsing_tasks") as synchronize_mock, patch.object(
+            service,
+            "execute_extracted_image_semantic_recognition",
+            return_value=SimpleNamespace(
+                succeeded=True,
+                description="fresh description",
+                result_model="qwen-test",
+            ),
+        ):
+            service.execute_extracted_image_semantic_task(task.id, client=None, storage=object())
+
+        get_client_mock.assert_called_once_with(config_id=config_id, session=session)
+        synchronize_mock.assert_called_once_with(task.id)
 

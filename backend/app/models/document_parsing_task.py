@@ -20,6 +20,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlmodel import Field, SQLModel
 
 from .common import utc_now
+from .extracted_image_semantic_task import ACTIVE_LLM_CONFIG_KEY
 from .layout_analysis_task import DEFAULT_LAYOUT_ANALYSIS_MODEL
 
 
@@ -54,7 +55,11 @@ class DocumentParsingTaskBase(SQLModel):
     requested_image_model: str | None = None
     target_image_model: str | None = None
     image_model_key: str = DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY
+    image_llm_config_id: UUID | None = None
+    image_llm_config_code: str | None = None
+    image_llm_config_key: str = ACTIVE_LLM_CONFIG_KEY
     force_layout_analysis: bool = False
+    force_image_semantic_recognition: bool = False
     layout_task_id: UUID
     status: DocumentParsingTaskStatus = DocumentParsingTaskStatus.pending
     markdown: str | None = None
@@ -81,6 +86,8 @@ class DocumentParsingTask(DocumentParsingTaskBase, table=True):
             "document_id",
             "layout_model_key",
             "image_model_key",
+            "image_llm_config_key",
+            "force_image_semantic_recognition",
             unique=True,
             postgresql_where=text("status IN ('pending', 'running')"),
         ),
@@ -108,7 +115,17 @@ class DocumentParsingTask(DocumentParsingTaskBase, table=True):
         default=DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY,
         sa_column=Column(Text, nullable=False, server_default=DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY),
     )
+    image_llm_config_id: UUID | None = Field(default=None, nullable=True, index=True)
+    image_llm_config_code: str | None = Field(default=None, sa_column=Column(Text, nullable=True, index=True))
+    image_llm_config_key: str = Field(
+        default=ACTIVE_LLM_CONFIG_KEY,
+        sa_column=Column(Text, nullable=False, server_default=ACTIVE_LLM_CONFIG_KEY),
+    )
     force_layout_analysis: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("FALSE")),
+    )
+    force_image_semantic_recognition: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("FALSE")),
     )
@@ -148,7 +165,11 @@ class DocumentParsingTaskCreate(SQLModel):
     requested_image_model: str | None = None
     target_image_model: str | None = None
     image_model_key: str = DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY
+    image_llm_config_id: UUID | None = None
+    image_llm_config_code: str | None = None
+    image_llm_config_key: str = ACTIVE_LLM_CONFIG_KEY
     force_layout_analysis: bool = False
+    force_image_semantic_recognition: bool = False
     layout_task_id: UUID
 
 

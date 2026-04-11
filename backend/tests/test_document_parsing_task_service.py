@@ -4,6 +4,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from backend.app.models import (
+    ACTIVE_LLM_CONFIG_KEY,
     DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY,
     DocumentParsingImageItem,
     DocumentParsingImageItemResultSource,
@@ -140,9 +141,109 @@ class DocumentParsingTaskServiceTests(TestCase):
         self.assertEqual(result.task.layout_task_id, layout_task.id)
         self.assertEqual(result.task.layout_model_key, "marker")
         self.assertEqual(result.task.image_model_key, DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY)
+        self.assertEqual(result.task.image_llm_config_key, ACTIVE_LLM_CONFIG_KEY)
         self.assertTrue(session.committed)
         self.assertGreaterEqual(len(session.refreshed), 1)
         sync_mock.assert_called_once_with(result.task.id)
+
+    def test_create_or_reuse_document_parsing_task_persists_explicit_llm_config(self):
+        session = _SessionStub()
+        layout_task = LayoutAnalysisTask(
+            id=uuid4(),
+            document_id=uuid4(),
+            file_id=uuid4(),
+            storage_bucket="softplan",
+            storage_key="documents/a.pdf",
+            requested_layout_model="marker",
+            target_layout_model="marker",
+            layout_model_key="marker",
+            status=LayoutAnalysisTaskStatus.pending,
+        )
+        config_id = uuid4()
+
+        with patch.object(service, "get_active_document_parsing_task_for_document", return_value=None), patch.object(
+            service,
+            "get_latest_succeeded_document_parsing_task_for_file",
+            return_value=None,
+        ), patch.object(
+            service,
+            "create_or_reuse_layout_analysis_task",
+            return_value=SimpleNamespace(task=layout_task, reused=False),
+        ), patch.object(
+            service,
+            "resolve_document_parsing_image_llm_config_selection",
+            return_value=service.DocumentParsingLlmConfigSelection(
+                config_id=config_id,
+                config_code="vision-config",
+                config_key=str(config_id),
+            ),
+        ), patch.object(service, "synchronize_document_parsing_task"):
+            result = service.create_or_reuse_document_parsing_task(
+                session,
+                document_id=layout_task.document_id,
+                file_id=layout_task.file_id,
+                storage_bucket="softplan",
+                storage_key="documents/b.pdf",
+                requested_layout_model="marker",
+                requested_image_model="vision-model",
+                image_llm_config_id=config_id,
+            )
+
+        self.assertEqual(result.task.image_llm_config_id, config_id)
+        self.assertEqual(result.task.image_llm_config_code, "vision-config")
+        self.assertEqual(result.task.image_llm_config_key, str(config_id))
+
+    def test_create_or_reuse_document_parsing_task_does_not_reuse_completed_when_force_image_semantic_enabled(self):
+        existing = DocumentParsingTask(
+            document_id=uuid4(),
+            file_id=uuid4(),
+            storage_bucket="softplan",
+            storage_key="documents/a.pdf",
+            requested_layout_model="marker",
+            target_layout_model="marker",
+            layout_model_key="marker",
+            requested_image_model="vision-model",
+            target_image_model="vision-model",
+            image_model_key="vision-model",
+            layout_task_id=uuid4(),
+            status=DocumentParsingTaskStatus.succeeded,
+        )
+        session = _SessionStub()
+        layout_task = LayoutAnalysisTask(
+            id=uuid4(),
+            document_id=existing.document_id,
+            file_id=existing.file_id,
+            storage_bucket="softplan",
+            storage_key="documents/a.pdf",
+            requested_layout_model="marker",
+            target_layout_model="marker",
+            layout_model_key="marker",
+            status=LayoutAnalysisTaskStatus.pending,
+        )
+
+        with patch.object(service, "get_active_document_parsing_task_for_document", return_value=None), patch.object(
+            service,
+            "get_latest_succeeded_document_parsing_task_for_file",
+            return_value=existing,
+        ) as completed_mock, patch.object(
+            service,
+            "create_or_reuse_layout_analysis_task",
+            return_value=SimpleNamespace(task=layout_task, reused=False),
+        ), patch.object(service, "synchronize_document_parsing_task"):
+            result = service.create_or_reuse_document_parsing_task(
+                session,
+                document_id=existing.document_id,
+                file_id=existing.file_id,
+                storage_bucket="softplan",
+                storage_key="documents/a.pdf",
+                requested_layout_model="marker",
+                requested_image_model="vision-model",
+                force_image_semantic_recognition=True,
+            )
+
+        completed_mock.assert_not_called()
+        self.assertFalse(result.reused)
+        self.assertTrue(result.task.force_image_semantic_recognition)
 
     def test_get_default_document_parsing_task_returns_none_without_tasks(self):
         with patch.object(service, "get_latest_document_parsing_task_for_document_file", return_value=None), patch.object(
@@ -456,6 +557,83 @@ class DocumentParsingTaskServiceTests(TestCase):
         added_item = next(item for item in session.added if isinstance(item, DocumentParsingImageItem))
         self.assertEqual(added_item.status, DocumentParsingImageItemStatus.succeeded)
         self.assertEqual(added_item.result_source, DocumentParsingImageItemResultSource.semantic_snapshot)
+
+    def test_dispatch_image_items_force_semantic_recognition_ignores_snapshot(self):
+        config_id = uuid4()
+        task = DocumentParsingTask(
+            document_id=uuid4(),
+            file_id=uuid4(),
+            storage_bucket="softplan",
+            storage_key="documents/a.pdf",
+            requested_image_model="vision-model",
+            target_image_model="vision-model",
+            image_model_key="vision-model",
+            image_llm_config_id=config_id,
+            image_llm_config_code="vision-config",
+            image_llm_config_key=str(config_id),
+            force_image_semantic_recognition=True,
+            layout_task_id=uuid4(),
+        )
+        layout_task = LayoutAnalysisTask(
+            id=task.layout_task_id,
+            document_id=task.document_id,
+            file_id=task.file_id,
+            storage_bucket="softplan",
+            storage_key=task.storage_key,
+            target_layout_model="marker",
+            layout_model_key="marker",
+            status=LayoutAnalysisTaskStatus.succeeded,
+            image_hashes={"img-1": "a" * 64},
+        )
+        extracted_image = ExtractedImage(
+            id=1,
+            file_hash="a" * 64,
+            storage_bucket="softplan",
+            storage_key="images/a.png",
+            file_size=1,
+            content_type="image/png",
+            extension=".png",
+            width=10,
+            height=10,
+        )
+        snapshot = ExtractedImageSemanticSnapshot(
+            extracted_image_id=1,
+            target_model_key="vision-model",
+            result_model="vision-model",
+            description="done",
+        )
+        semantic_task = ExtractedImageSemanticTask(
+            id=uuid4(),
+            extracted_image_id=1,
+            status=ExtractedImageSemanticTaskStatus.pending,
+            requested_model="vision-model",
+            target_model="vision-model",
+            target_model_key="vision-model",
+            llm_config_id=config_id,
+            llm_config_code="vision-config",
+            llm_config_key=str(config_id),
+            overwrite_existing_snapshot=True,
+            request_id="req-1",
+            prompt_path="backend/app/prompts/extracted_image_semantic.txt",
+        )
+        session = _SessionStub()
+
+        with patch.object(service, "get_document_parsing_image_items", return_value=[]), patch.object(
+            service,
+            "_load_extracted_images_by_hash",
+            return_value={"a" * 64: extracted_image},
+        ), patch.object(service, "_get_semantic_snapshot", return_value=snapshot), patch.object(
+            service,
+            "create_or_reuse_extracted_image_semantic_task",
+            return_value=SimpleNamespace(task=semantic_task, reused=False),
+        ) as create_task_mock:
+            service._dispatch_image_items_if_needed(session, task=task, layout_task=layout_task)
+
+        create_task_mock.assert_called_once()
+        self.assertEqual(create_task_mock.call_args.kwargs["config_id"], config_id)
+        self.assertTrue(create_task_mock.call_args.kwargs["overwrite_existing_snapshot"])
+        added_item = next(item for item in session.added if isinstance(item, DocumentParsingImageItem))
+        self.assertEqual(added_item.result_source, DocumentParsingImageItemResultSource.submitted_semantic_task)
 
     def test_process_document_parsing_tasks_for_layout_task_synchronizes_all_bound_tasks(self):
         session = _ProcessSessionStub([uuid4(), uuid4()])

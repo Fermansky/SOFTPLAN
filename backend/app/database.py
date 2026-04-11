@@ -6,6 +6,7 @@ from sqlmodel import SQLModel, Session, create_engine
 
 from . import models as _models  # noqa: F401
 from .models.document_parsing_task import DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY
+from .models.extracted_image_semantic_task import ACTIVE_LLM_CONFIG_KEY
 from .models.layout_analysis_task import DEFAULT_LAYOUT_ANALYSIS_MODEL
 
 
@@ -84,11 +85,19 @@ def _ensure_extracted_image_semantic_task_columns() -> None:
 
     _execute_statements(
         [
+            "ALTER TABLE extracted_image_semantic_tasks ADD COLUMN IF NOT EXISTS llm_config_id UUID",
+            "ALTER TABLE extracted_image_semantic_tasks ADD COLUMN IF NOT EXISTS llm_config_code TEXT",
+            (
+                "ALTER TABLE extracted_image_semantic_tasks "
+                f"ADD COLUMN IF NOT EXISTS llm_config_key TEXT NOT NULL DEFAULT '{ACTIVE_LLM_CONFIG_KEY}'"
+            ),
             "ALTER TABLE extracted_image_semantic_tasks ADD COLUMN IF NOT EXISTS overwrite_existing_snapshot BOOLEAN NOT NULL DEFAULT FALSE",
             "DROP INDEX IF EXISTS ux_extracted_image_semantic_tasks_active",
+            "CREATE INDEX IF NOT EXISTS ix_extracted_image_semantic_tasks_llm_config_id ON extracted_image_semantic_tasks (llm_config_id)",
+            "CREATE INDEX IF NOT EXISTS ix_extracted_image_semantic_tasks_llm_config_code ON extracted_image_semantic_tasks (llm_config_code)",
             (
                 "CREATE UNIQUE INDEX ux_extracted_image_semantic_tasks_active "
-                "ON extracted_image_semantic_tasks (extracted_image_id, target_model_key, overwrite_existing_snapshot) "
+                "ON extracted_image_semantic_tasks (extracted_image_id, target_model_key, llm_config_key, overwrite_existing_snapshot) "
                 "WHERE status IN ('pending', 'running')"
             ),
         ]
@@ -208,7 +217,14 @@ def _ensure_document_parsing_task_columns() -> None:
             "ALTER TABLE document_parsing_tasks "
             f"ADD COLUMN IF NOT EXISTS image_model_key TEXT NOT NULL DEFAULT '{DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY}'"
         ),
+        "ALTER TABLE document_parsing_tasks ADD COLUMN IF NOT EXISTS image_llm_config_id UUID",
+        "ALTER TABLE document_parsing_tasks ADD COLUMN IF NOT EXISTS image_llm_config_code TEXT",
+        (
+            "ALTER TABLE document_parsing_tasks "
+            f"ADD COLUMN IF NOT EXISTS image_llm_config_key TEXT NOT NULL DEFAULT '{ACTIVE_LLM_CONFIG_KEY}'"
+        ),
         "ALTER TABLE document_parsing_tasks ADD COLUMN IF NOT EXISTS force_layout_analysis BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE document_parsing_tasks ADD COLUMN IF NOT EXISTS force_image_semantic_recognition BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE document_parsing_tasks ADD COLUMN IF NOT EXISTS layout_task_id UUID",
         "ALTER TABLE document_parsing_tasks ADD COLUMN IF NOT EXISTS markdown TEXT",
         "ALTER TABLE document_parsing_tasks ADD COLUMN IF NOT EXISTS image_hashes JSONB NOT NULL DEFAULT '{}'::jsonb",
@@ -219,15 +235,17 @@ def _ensure_document_parsing_task_columns() -> None:
         "ALTER TABLE document_parsing_tasks ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0",
         "DROP INDEX IF EXISTS ux_document_parsing_tasks_document_active",
         "DROP INDEX IF EXISTS ix_document_parsing_tasks_success_by_file_layout_image",
+        "CREATE INDEX IF NOT EXISTS ix_document_parsing_tasks_image_llm_config_id ON document_parsing_tasks (image_llm_config_id)",
+        "CREATE INDEX IF NOT EXISTS ix_document_parsing_tasks_image_llm_config_code ON document_parsing_tasks (image_llm_config_code)",
         (
             "CREATE UNIQUE INDEX ux_document_parsing_tasks_document_active "
-            "ON document_parsing_tasks (document_id, layout_model_key, image_model_key) "
+            "ON document_parsing_tasks (document_id, layout_model_key, image_model_key, image_llm_config_key, force_image_semantic_recognition) "
             "WHERE status IN ('pending', 'running')"
         ),
         (
             "CREATE INDEX ix_document_parsing_tasks_success_by_file_layout_image "
-            "ON document_parsing_tasks (file_id, layout_model_key, image_model_key, created_at DESC) "
-            "WHERE status = 'succeeded'"
+            "ON document_parsing_tasks (file_id, layout_model_key, image_model_key, image_llm_config_key, created_at DESC) "
+            "WHERE status = 'succeeded' AND force_layout_analysis = FALSE AND force_image_semantic_recognition = FALSE"
         ),
     ]
     _execute_statements(statements)

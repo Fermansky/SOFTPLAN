@@ -86,6 +86,7 @@ class RouterTests(TestCase):
     def test_create_document_parsing_task_returns_aggregate_fields(self):
         document, file_record = self._build_pdf_document_and_file()
         session = _SessionStub()
+        config_id = uuid4()
         layout_task = LayoutAnalysisTask(
             id=uuid4(),
             document_id=document.id,
@@ -111,6 +112,10 @@ class RouterTests(TestCase):
             requested_image_model="vision-model",
             target_image_model="vision-model",
             image_model_key="vision-model",
+            image_llm_config_id=config_id,
+            image_llm_config_code="vision-config",
+            image_llm_config_key=str(config_id),
+            force_image_semantic_recognition=True,
             layout_task_id=layout_task.id,
             status=DocumentParsingTaskStatus.running,
             markdown="# parsed",
@@ -138,7 +143,7 @@ class RouterTests(TestCase):
             document_parsing,
             "create_or_reuse_document_parsing_task",
             return_value=SimpleNamespace(task=task, reused=False),
-        ), patch.object(
+        ) as create_mock, patch.object(
             document_parsing,
             "get_layout_task_for_document_parsing_task",
             return_value=layout_task,
@@ -157,17 +162,24 @@ class RouterTests(TestCase):
                     document_id=document.id,
                     layout_model="marker",
                     image_model="vision-model",
+                    image_llm_config_id=config_id,
+                    force_image_semantic_recognition=True,
                 ),
                 session=session,
             )
 
         self.assertEqual(response.target_layout_model, "marker")
         self.assertEqual(response.target_image_model, "vision-model")
+        self.assertEqual(response.image_llm_config_id, config_id)
+        self.assertEqual(response.image_llm_config_code, "vision-config")
+        self.assertTrue(response.force_image_semantic_recognition)
         self.assertEqual(response.layout_status, LayoutAnalysisTaskStatus.succeeded)
         self.assertEqual(response.image_analysis_status, document_parsing.DocumentParsingImageAnalysisStatus.running)
         self.assertEqual(response.markdown, "# parsed")
         self.assertEqual(len(response.image_items), 1)
         self.assertEqual(response.image_items[0].semantic.description, "semantic text")
+        self.assertEqual(create_mock.call_args.kwargs["image_llm_config_id"], config_id)
+        self.assertTrue(create_mock.call_args.kwargs["force_image_semantic_recognition"])
 
     def test_get_document_parsing_document_result_returns_latest_succeeded_task_with_image_semantic(self):
         document, file_record = self._build_pdf_document_and_file()
@@ -247,6 +259,30 @@ class RouterTests(TestCase):
         self.assertEqual(response.image_hashes, {"img-1": "a" * 64})
         self.assertEqual(len(response.image_items), 1)
         self.assertEqual(response.image_items[0].semantic.description, "semantic text")
+
+    def test_create_document_parsing_task_maps_llm_config_errors(self):
+        document, file_record = self._build_pdf_document_and_file()
+
+        with patch.object(document_parsing, "get_active_document_or_404", return_value=document), patch.object(
+            document_parsing,
+            "get_file_or_404",
+            return_value=file_record,
+        ), patch.object(
+            document_parsing,
+            "create_or_reuse_document_parsing_task",
+            side_effect=document_parsing.LlmConfigNotFoundError("LLM config not found"),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                document_parsing.create_document_parsing_task(
+                    payload=document_parsing.DocumentParsingTaskCreateRequest(
+                        document_id=document.id,
+                        image_llm_config_id=uuid4(),
+                    ),
+                    session=_SessionStub(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.assertEqual(ctx.exception.detail, "LLM config not found")
 
     def test_get_document_parsing_document_result_returns_no_task_without_succeeded_result(self):
         document, file_record = self._build_pdf_document_and_file()

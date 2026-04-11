@@ -20,6 +20,9 @@ from sqlmodel import Field, SQLModel
 from .common import utc_now
 
 
+ACTIVE_LLM_CONFIG_KEY = "__ACTIVE_LLM_CONFIG__"
+
+
 class ExtractedImageSemanticTaskStatus(str, Enum):
     """抽取图片语义任务状态。"""
 
@@ -37,6 +40,9 @@ class ExtractedImageSemanticTaskBase(SQLModel):
     requested_model: str | None = None
     target_model: str | None = None
     target_model_key: str
+    llm_config_id: UUID | None = None
+    llm_config_code: str | None = None
+    llm_config_key: str = ACTIVE_LLM_CONFIG_KEY
     overwrite_existing_snapshot: bool = False
     result_model: str | None = None
     request_id: str | None = None
@@ -61,6 +67,7 @@ class ExtractedImageSemanticTask(ExtractedImageSemanticTaskBase, table=True):
             "ux_extracted_image_semantic_tasks_active",
             "extracted_image_id",
             "target_model_key",
+            "llm_config_key",
             "overwrite_existing_snapshot",
             unique=True,
             postgresql_where=text("status IN ('pending', 'running')"),
@@ -78,6 +85,12 @@ class ExtractedImageSemanticTask(ExtractedImageSemanticTaskBase, table=True):
     requested_model: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     target_model: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     target_model_key: str = Field(sa_column=Column(Text, nullable=False, index=True))
+    llm_config_id: UUID | None = Field(default=None, nullable=True, index=True)
+    llm_config_code: str | None = Field(default=None, sa_column=Column(Text, nullable=True, index=True))
+    llm_config_key: str = Field(
+        default=ACTIVE_LLM_CONFIG_KEY,
+        sa_column=Column(Text, nullable=False, default=ACTIVE_LLM_CONFIG_KEY, server_default=text(f"'{ACTIVE_LLM_CONFIG_KEY}'")),
+    )
     overwrite_existing_snapshot: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False, default=False, server_default=text("false")),

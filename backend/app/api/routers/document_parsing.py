@@ -32,6 +32,13 @@ from ...models import (
     LayoutAnalysisTaskStatus,
 )
 from ...services import FileConvertServiceClient
+from ...services import (
+    LlmConfigConflictError,
+    LlmConfigDisabledError,
+    LlmConfigNotFoundError,
+    LlmConfigResolutionError,
+    LlmConfigValidationError,
+)
 from ...services.document_parsing_task_service import (
     DocumentParsingImageSemanticResult,
     create_or_reuse_document_parsing_task,
@@ -76,7 +83,9 @@ class DocumentParsingTaskCreateRequest(BaseModel):
     document_id: UUID
     layout_model: str | None = None
     image_model: str | None = None
+    image_llm_config_id: UUID | None = None
     force_layout_analysis: bool = False
+    force_image_semantic_recognition: bool = False
 
 
 class DocumentParsingImageSemanticRead(BaseModel):
@@ -118,7 +127,10 @@ class DocumentParsingTaskRead(BaseModel):
     requested_image_model: str | None = None
     target_image_model: str | None = None
     image_model_key: str
+    image_llm_config_id: UUID | None = None
+    image_llm_config_code: str | None = None
     force_layout_analysis: bool = False
+    force_image_semantic_recognition: bool = False
     layout_task_id: UUID
     status: DocumentParsingTaskStatus
     layout_status: LayoutAnalysisTaskStatus
@@ -161,7 +173,10 @@ class DocumentParsingDocumentResultRead(BaseModel):
     requested_image_model: str | None = None
     target_image_model: str | None = None
     image_model_key: str | None = None
+    image_llm_config_id: UUID | None = None
+    image_llm_config_code: str | None = None
     force_layout_analysis: bool = False
+    force_image_semantic_recognition: bool = False
     layout_task_id: UUID | None = None
     layout_status: LayoutAnalysisTaskStatus | None = None
     image_analysis_status: DocumentParsingImageAnalysisStatus | None = None
@@ -195,6 +210,22 @@ def _resolve_pdf_file_record(document_id: UUID, session: Session) -> tuple[UUID,
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Only PDF document is supported")
 
     return document.id, file_record
+
+
+def _raise_llm_config_http_error(exc: Exception) -> None:
+    """把 LLM 配置异常映射为文档解析路由的 HTTP 错误。"""
+
+    if isinstance(exc, LlmConfigNotFoundError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    if isinstance(exc, LlmConfigDisabledError):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if isinstance(exc, LlmConfigConflictError):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if isinstance(exc, LlmConfigResolutionError):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    if isinstance(exc, LlmConfigValidationError):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    raise exc
 
 
 def _to_image_semantic_read(
@@ -295,7 +326,10 @@ def to_document_parsing_task_read(
         requested_image_model=task.requested_image_model,
         target_image_model=task.target_image_model,
         image_model_key=task.image_model_key,
+        image_llm_config_id=task.image_llm_config_id,
+        image_llm_config_code=task.image_llm_config_code,
         force_layout_analysis=task.force_layout_analysis,
+        force_image_semantic_recognition=task.force_image_semantic_recognition,
         layout_task_id=task.layout_task_id,
         status=task.status,
         layout_status=layout_status,
@@ -362,7 +396,9 @@ def create_document_parsing_task(
             storage_key=file_record.storage_key,
             requested_layout_model=payload.layout_model,
             requested_image_model=payload.image_model,
+            image_llm_config_id=payload.image_llm_config_id,
             force_layout_analysis=payload.force_layout_analysis,
+            force_image_semantic_recognition=payload.force_image_semantic_recognition,
         )
     except UnsupportedLayoutAnalysisModelError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -377,6 +413,14 @@ def create_document_parsing_task(
             ),
         )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="document parsing task conflict") from exc
+    except (
+        LlmConfigNotFoundError,
+        LlmConfigDisabledError,
+        LlmConfigConflictError,
+        LlmConfigResolutionError,
+        LlmConfigValidationError,
+    ) as exc:
+        _raise_llm_config_http_error(exc)
 
     logger.info(
         "Document parsing task submitted",
@@ -387,8 +431,13 @@ def create_document_parsing_task(
             task_id=str(submission.task.id),
             reused=submission.reused,
             force_layout_analysis=payload.force_layout_analysis,
+            force_image_semantic_recognition=payload.force_image_semantic_recognition,
             layout_model=submission.task.target_layout_model,
             image_model=submission.task.target_image_model,
+            image_llm_config_id=(
+                str(submission.task.image_llm_config_id) if submission.task.image_llm_config_id is not None else None
+            ),
+            image_llm_config_code=submission.task.image_llm_config_code,
         ),
     )
     return to_document_parsing_task_read(session, submission.task, reused=submission.reused)
@@ -444,7 +493,10 @@ def get_document_parsing_document_result(
         requested_image_model=task.requested_image_model,
         target_image_model=task.target_image_model,
         image_model_key=task.image_model_key,
+        image_llm_config_id=task.image_llm_config_id,
+        image_llm_config_code=task.image_llm_config_code,
         force_layout_analysis=task.force_layout_analysis,
+        force_image_semantic_recognition=task.force_image_semantic_recognition,
         layout_task_id=task.layout_task_id,
         layout_status=task_read.layout_status,
         image_analysis_status=task_read.image_analysis_status,

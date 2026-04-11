@@ -30,6 +30,11 @@ from ...models import (
     ExtractedImageUpdate,
 )
 from ...services import (
+    LlmConfigConflictError,
+    LlmConfigDisabledError,
+    LlmConfigNotFoundError,
+    LlmConfigResolutionError,
+    LlmConfigValidationError,
     create_or_reuse_extracted_image_semantic_task,
     get_extracted_image_semantic_task_by_id,
     get_latest_extracted_image_semantic_task_for_image,
@@ -45,6 +50,7 @@ class ExtractedImageSemanticTaskCreateRequest(BaseModel):
 
     request_id: str | None = None
     model: str | None = None
+    config_id: UUID | None = None
     overwrite_existing_snapshot: bool = False
 
 
@@ -56,6 +62,8 @@ class ExtractedImageSemanticTaskRead(BaseModel):
     status: ExtractedImageSemanticTaskStatus
     requested_model: str | None = None
     target_model: str | None = None
+    llm_config_id: UUID | None = None
+    llm_config_code: str | None = None
     overwrite_existing_snapshot: bool = False
     result_model: str | None = None
     request_id: str | None = None
@@ -87,6 +95,8 @@ class ExtractedImageSemanticImageResultRead(BaseModel):
     task_id: UUID | None = None
     requested_model: str | None = None
     target_model: str | None = None
+    llm_config_id: UUID | None = None
+    llm_config_code: str | None = None
     result_model: str | None = None
     description: str | None = None
     error_message: str | None = None
@@ -173,6 +183,7 @@ def create_extracted_image_semantic_task(
     extracted_image = get_extracted_image_or_404(image_id, session)
     request_id = (payload.request_id if payload is not None else None) or get_request_id()
     requested_model = payload.model if payload is not None else None
+    config_id = payload.config_id if payload is not None else None
     overwrite_existing_snapshot = payload.overwrite_existing_snapshot if payload is not None else False
 
     logger.info(
@@ -182,6 +193,7 @@ def create_extracted_image_semantic_task(
             image_id=image_id,
             request_id=request_id,
             requested_model=requested_model or "<default>",
+            config_id=str(config_id) if config_id is not None else None,
             overwrite_existing_snapshot=overwrite_existing_snapshot,
         ),
     )
@@ -191,6 +203,7 @@ def create_extracted_image_semantic_task(
             extracted_image=extracted_image,
             requested_model=requested_model,
             request_id=request_id,
+            config_id=config_id,
             overwrite_existing_snapshot=overwrite_existing_snapshot,
         )
     except IntegrityError as exc:
@@ -201,6 +214,7 @@ def create_extracted_image_semantic_task(
                 "extracted_image.semantic_task_create.failed",
                 image_id=image_id,
                 request_id=request_id,
+                config_id=str(config_id) if config_id is not None else None,
                 overwrite_existing_snapshot=overwrite_existing_snapshot,
             ),
         )
@@ -208,6 +222,14 @@ def create_extracted_image_semantic_task(
             status_code=status.HTTP_409_CONFLICT,
             detail="extracted image semantic task conflict",
         ) from exc
+    except (
+        LlmConfigNotFoundError,
+        LlmConfigDisabledError,
+        LlmConfigConflictError,
+        LlmConfigResolutionError,
+        LlmConfigValidationError,
+    ) as exc:
+        _raise_llm_config_http_error(exc)
 
     logger.info(
         "Extracted image semantic task submitted",
@@ -217,6 +239,8 @@ def create_extracted_image_semantic_task(
             request_id=request_id,
             task_id=str(submission.task.id),
             reused=submission.reused,
+            config_id=str(submission.task.llm_config_id) if submission.task.llm_config_id is not None else None,
+            config_code=submission.task.llm_config_code,
             overwrite_existing_snapshot=submission.task.overwrite_existing_snapshot,
         ),
     )
@@ -290,6 +314,8 @@ def _to_task_read(task: ExtractedImageSemanticTask, *, reused: bool = False) -> 
         status=task.status,
         requested_model=task.requested_model,
         target_model=task.target_model,
+        llm_config_id=task.llm_config_id,
+        llm_config_code=task.llm_config_code,
         overwrite_existing_snapshot=task.overwrite_existing_snapshot,
         result_model=task.result_model,
         request_id=task.request_id,
@@ -313,6 +339,8 @@ def _to_image_result_read(task: ExtractedImageSemanticTask) -> ExtractedImageSem
         task_id=task.id,
         requested_model=task.requested_model,
         target_model=task.target_model,
+        llm_config_id=task.llm_config_id,
+        llm_config_code=task.llm_config_code,
         result_model=task.result_model if task.status == ExtractedImageSemanticTaskStatus.succeeded else None,
         description=task.description if task.status == ExtractedImageSemanticTaskStatus.succeeded else None,
         error_message=task.error_message if task.status == ExtractedImageSemanticTaskStatus.failed else None,
@@ -321,3 +349,19 @@ def _to_image_result_read(task: ExtractedImageSemanticTask) -> ExtractedImageSem
         finished_at=task.finished_at,
         updated_at=task.updated_at,
     )
+
+
+def _raise_llm_config_http_error(exc: Exception) -> None:
+    """把 LLM 配置相关异常映射为图片语义路由的 HTTP 错误。"""
+
+    if isinstance(exc, LlmConfigNotFoundError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    if isinstance(exc, LlmConfigDisabledError):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if isinstance(exc, LlmConfigConflictError):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if isinstance(exc, LlmConfigResolutionError):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    if isinstance(exc, LlmConfigValidationError):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    raise exc

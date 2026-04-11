@@ -23,6 +23,7 @@ from sqlmodel import Session, select
 
 from ..database import engine
 from ..models import (
+    ACTIVE_LLM_CONFIG_KEY,
     ExtractedImage,
     ExtractedImageSemanticSnapshot,
     ExtractedImageSemanticTask,
@@ -35,6 +36,7 @@ from .extracted_image_semantic_service import (
     get_extracted_image_semantic_target_model_key,
     resolve_extracted_image_semantic_model,
 )
+from .llm_config_service import LlmConfigError, resolve_llm_config
 from .llm_service import LlmServiceClient, get_llm_service_client
 from .minio_storage import MinioStorage, get_minio_storage
 
@@ -47,6 +49,15 @@ class ExtractedImageSemanticTaskSubmissionResult:
 
     task: ExtractedImageSemanticTask
     reused: bool
+
+
+@dataclass(frozen=True)
+class ExtractedImageSemanticLlmConfigSelection:
+    """图片语义任务使用的 LLM 配置选择结果。"""
+
+    config_id: UUID | None
+    config_code: str | None
+    config_key: str
 
 
 
@@ -64,6 +75,30 @@ def _normalize_requested_model(requested_model: str | None) -> str | None:
         return None
     stripped = requested_model.strip()
     return stripped or None
+
+
+def _resolve_llm_config_selection(
+    session: Session,
+    *,
+    config_id: UUID | None,
+) -> ExtractedImageSemanticLlmConfigSelection:
+    """解析图片语义任务绑定的 LLM 配置。
+
+    未显式指定时使用活动配置哨兵键，表示执行阶段读取当前激活配置。
+    """
+    if config_id is None:
+        return ExtractedImageSemanticLlmConfigSelection(
+            config_id=None,
+            config_code=None,
+            config_key=ACTIVE_LLM_CONFIG_KEY,
+        )
+
+    llm_config = resolve_llm_config(session, config_id=config_id)
+    return ExtractedImageSemanticLlmConfigSelection(
+        config_id=llm_config.id,
+        config_code=llm_config.code,
+        config_key=str(llm_config.id),
+    )
 
 
 
@@ -91,6 +126,7 @@ def get_active_extracted_image_semantic_task(
     *,
     extracted_image_id: int,
     target_model_key: str,
+    llm_config_key: str,
     overwrite_existing_snapshot: bool,
 ) -> ExtractedImageSemanticTask | None:
     """获取图片当前仍在进行中的语义任务。
@@ -103,6 +139,7 @@ def get_active_extracted_image_semantic_task(
         .where(
             ExtractedImageSemanticTask.extracted_image_id == extracted_image_id,
             ExtractedImageSemanticTask.target_model_key == target_model_key,
+            ExtractedImageSemanticTask.llm_config_key == llm_config_key,
             ExtractedImageSemanticTask.overwrite_existing_snapshot == overwrite_existing_snapshot,
             ExtractedImageSemanticTask.status.in_(
                 (ExtractedImageSemanticTaskStatus.pending, ExtractedImageSemanticTaskStatus.running)
@@ -140,6 +177,7 @@ def create_or_reuse_extracted_image_semantic_task(
     target_model: str | None = None,
     use_target_model: bool = False,
     request_id: str | None = None,
+    config_id: UUID | None = None,
     overwrite_existing_snapshot: bool = False,
 ) -> ExtractedImageSemanticTaskSubmissionResult:
     """创建或复用抽取图片语义任务。
@@ -154,12 +192,14 @@ def create_or_reuse_extracted_image_semantic_task(
     if not use_target_model:
         normalized_target_model = resolve_extracted_image_semantic_model(normalized_requested_model)
     target_model_key = get_extracted_image_semantic_target_model_key(normalized_target_model)
+    llm_config_selection = _resolve_llm_config_selection(session, config_id=config_id)
     prompt_path, prompt_hash = get_extracted_image_semantic_prompt_snapshot()
 
     existing = get_active_extracted_image_semantic_task(
         session,
         extracted_image_id=extracted_image.id or 0,
         target_model_key=target_model_key,
+        llm_config_key=llm_config_selection.config_key,
         overwrite_existing_snapshot=overwrite_existing_snapshot,
     )
     if existing is not None:
@@ -171,6 +211,9 @@ def create_or_reuse_extracted_image_semantic_task(
         requested_model=normalized_requested_model,
         target_model=normalized_target_model,
         target_model_key=target_model_key,
+        llm_config_id=llm_config_selection.config_id,
+        llm_config_code=llm_config_selection.config_code,
+        llm_config_key=llm_config_selection.config_key,
         overwrite_existing_snapshot=overwrite_existing_snapshot,
         result_model=None,
         request_id=request_id,
@@ -189,6 +232,7 @@ def create_or_reuse_extracted_image_semantic_task(
             session,
             extracted_image_id=extracted_image.id or 0,
             target_model_key=target_model_key,
+            llm_config_key=llm_config_selection.config_key,
             overwrite_existing_snapshot=overwrite_existing_snapshot,
         )
         if existing_after_conflict is not None:
@@ -367,7 +411,6 @@ def execute_extracted_image_semantic_task(
     - 失败时只更新任务状态，不覆盖既有成功快照。
     - 无论成功还是失败，都会回灌关联的 `DocumentParsingTask` 聚合状态。
     """
-    llm_client = client or get_llm_service_client()
     minio_storage = storage or get_minio_storage()
 
     with Session(engine) as session:
@@ -388,6 +431,15 @@ def execute_extracted_image_semantic_task(
             _mark_task_failed(session, task=task, error_message="Extracted image not found")
             _synchronize_document_parsing_tasks(task.id)
             return
+
+        llm_client = client
+        if llm_client is None:
+            try:
+                llm_client = get_llm_service_client(config_id=task.llm_config_id, session=session)
+            except LlmConfigError as exc:
+                _mark_task_failed(session, task=task, error_message=str(exc))
+                _synchronize_document_parsing_tasks(task.id)
+                return
 
         execution_result = execute_extracted_image_semantic_recognition(
             extracted_image=extracted_image,

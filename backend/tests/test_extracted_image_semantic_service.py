@@ -263,6 +263,7 @@ class ExtractedImageSemanticRouteTests(TestCase):
     def test_create_task_route_uses_default_overwrite_false(self):
         extracted_image = self._build_extracted_image()
         task = self._build_task(overwrite_existing_snapshot=False)
+        config_id = uuid4()
 
         with patch.object(extracted_images, "get_extracted_image_or_404", return_value=extracted_image), patch.object(
             extracted_images,
@@ -271,7 +272,11 @@ class ExtractedImageSemanticRouteTests(TestCase):
         ) as create_mock:
             response = extracted_images.create_extracted_image_semantic_task(
                 image_id=1,
-                payload=extracted_images.ExtractedImageSemanticTaskCreateRequest(request_id="req-9", model="request-model"),
+                payload=extracted_images.ExtractedImageSemanticTaskCreateRequest(
+                    request_id="req-9",
+                    model="request-model",
+                    config_id=config_id,
+                ),
                 session=object(),
             )
 
@@ -280,6 +285,7 @@ class ExtractedImageSemanticRouteTests(TestCase):
         self.assertTrue(response.reused)
         self.assertFalse(response.overwrite_existing_snapshot)
         self.assertEqual(create_mock.call_args.kwargs["requested_model"], "request-model")
+        self.assertEqual(create_mock.call_args.kwargs["config_id"], config_id)
         self.assertEqual(create_mock.call_args.kwargs["request_id"], "req-9")
         self.assertFalse(create_mock.call_args.kwargs["overwrite_existing_snapshot"])
 
@@ -304,6 +310,24 @@ class ExtractedImageSemanticRouteTests(TestCase):
 
         self.assertTrue(response.overwrite_existing_snapshot)
         self.assertTrue(create_mock.call_args.kwargs["overwrite_existing_snapshot"])
+
+    def test_create_task_route_maps_llm_config_errors(self):
+        extracted_image = self._build_extracted_image()
+
+        with patch.object(extracted_images, "get_extracted_image_or_404", return_value=extracted_image), patch.object(
+            extracted_images,
+            "create_or_reuse_extracted_image_semantic_task",
+            side_effect=extracted_images.LlmConfigNotFoundError("LLM config not found"),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                extracted_images.create_extracted_image_semantic_task(
+                    image_id=1,
+                    payload=extracted_images.ExtractedImageSemanticTaskCreateRequest(config_id=uuid4()),
+                    session=object(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.assertEqual(ctx.exception.detail, "LLM config not found")
 
     def test_get_task_route_returns_404_when_missing(self):
         with patch.object(extracted_images, "get_extracted_image_semantic_task_by_id", return_value=None):

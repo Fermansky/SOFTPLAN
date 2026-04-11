@@ -28,6 +28,7 @@ from .extracted_image_semantic_snapshot import (
     ExtractedImageSemanticSnapshotRead,
 )
 from .extracted_image_semantic_task import (
+    ACTIVE_LLM_CONFIG_KEY,
     ExtractedImageSemanticTask,
     ExtractedImageSemanticTaskRead,
     ExtractedImageSemanticTaskStatus,
@@ -56,6 +57,7 @@ __all__ = [
     "DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY",
     "DEFAULT_DOCUMENT_PARSING_PDF_MODEL",
     "DEFAULT_LAYOUT_ANALYSIS_MODEL",
+    "ACTIVE_LLM_CONFIG_KEY",
     "Document",
     "DocumentCreate",
     "DocumentRead",

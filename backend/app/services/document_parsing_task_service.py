@@ -22,6 +22,7 @@ from sqlmodel import Session, select
 
 from ..database import engine
 from ..models import (
+    ACTIVE_LLM_CONFIG_KEY,
     DEFAULT_DOCUMENT_PARSING_IMAGE_MODEL_KEY,
     DocumentParsingImageItem,
     DocumentParsingImageItemResultSource,
@@ -42,6 +43,7 @@ from .extracted_image_semantic_service import (
 )
 from .extracted_image_semantic_task_service import create_or_reuse_extracted_image_semantic_task
 from .layout_analysis_task_service import create_or_reuse_layout_analysis_task, resolve_layout_analysis_model_selection
+from .llm_config_service import resolve_llm_config
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,15 @@ class DocumentParsingModelSelection:
     requested_model: str | None
     target_model: str | None
     model_key: str
+
+
+@dataclass(frozen=True)
+class DocumentParsingLlmConfigSelection:
+    """文档解析图片语义链路使用的 LLM 配置选择结果。"""
+
+    config_id: UUID | None
+    config_code: str | None
+    config_key: str
 
 
 @dataclass(frozen=True)
@@ -103,6 +114,27 @@ def resolve_document_parsing_image_model_selection(requested_model: str | None) 
     )
 
 
+def resolve_document_parsing_image_llm_config_selection(
+    session: Session,
+    *,
+    config_id: UUID | None,
+) -> DocumentParsingLlmConfigSelection:
+    """解析文档解析图片语义阶段绑定的 LLM 配置。"""
+    if config_id is None:
+        return DocumentParsingLlmConfigSelection(
+            config_id=None,
+            config_code=None,
+            config_key=ACTIVE_LLM_CONFIG_KEY,
+        )
+
+    llm_config = resolve_llm_config(session, config_id=config_id)
+    return DocumentParsingLlmConfigSelection(
+        config_id=llm_config.id,
+        config_code=llm_config.code,
+        config_key=str(llm_config.id),
+    )
+
+
 
 def _build_image_refs_from_image_hashes(image_hashes: Mapping[str, str] | None) -> list[DocumentParsingImageRef]:
     """将 `image_hashes` 映射转换为稳定的图片引用列表。"""
@@ -132,6 +164,8 @@ def get_active_document_parsing_task_for_document(
     document_id: UUID,
     layout_model_key: str,
     image_model_key: str,
+    image_llm_config_key: str,
+    force_image_semantic_recognition: bool,
 ) -> DocumentParsingTask | None:
     """获取文档当前仍在进行中的文档解析聚合任务。"""
     statement = (
@@ -140,6 +174,8 @@ def get_active_document_parsing_task_for_document(
             DocumentParsingTask.document_id == document_id,
             DocumentParsingTask.layout_model_key == layout_model_key,
             DocumentParsingTask.image_model_key == image_model_key,
+            DocumentParsingTask.image_llm_config_key == image_llm_config_key,
+            DocumentParsingTask.force_image_semantic_recognition == force_image_semantic_recognition,
             DocumentParsingTask.status.in_((DocumentParsingTaskStatus.pending, DocumentParsingTaskStatus.running)),
         )
         .order_by(DocumentParsingTask.created_at.desc())
@@ -154,6 +190,7 @@ def get_latest_succeeded_document_parsing_task_for_file(
     file_id: UUID,
     layout_model_key: str,
     image_model_key: str,
+    image_llm_config_key: str,
 ) -> DocumentParsingTask | None:
     """获取同文件最近一次完整成功的文档解析结果。"""
     statement = (
@@ -162,6 +199,9 @@ def get_latest_succeeded_document_parsing_task_for_file(
             DocumentParsingTask.file_id == file_id,
             DocumentParsingTask.layout_model_key == layout_model_key,
             DocumentParsingTask.image_model_key == image_model_key,
+            DocumentParsingTask.image_llm_config_key == image_llm_config_key,
+            DocumentParsingTask.force_layout_analysis.is_(False),
+            DocumentParsingTask.force_image_semantic_recognition.is_(False),
             DocumentParsingTask.status == DocumentParsingTaskStatus.succeeded,
         )
         .order_by(DocumentParsingTask.created_at.desc())
@@ -179,7 +219,9 @@ def create_or_reuse_document_parsing_task(
     storage_key: str,
     requested_layout_model: str | None = None,
     requested_image_model: str | None = None,
+    image_llm_config_id: UUID | None = None,
     force_layout_analysis: bool = False,
+    force_image_semantic_recognition: bool = False,
 ) -> DocumentParsingTaskSubmissionResult:
     """创建或复用文档解析聚合任务。
 
@@ -189,22 +231,29 @@ def create_or_reuse_document_parsing_task(
     """
     layout_selection = resolve_layout_analysis_model_selection(requested_layout_model)
     image_selection = resolve_document_parsing_image_model_selection(requested_image_model)
+    image_llm_config_selection = resolve_document_parsing_image_llm_config_selection(
+        session,
+        config_id=image_llm_config_id,
+    )
 
     existing = get_active_document_parsing_task_for_document(
         session,
         document_id=document_id,
         layout_model_key=layout_selection.model_key,
         image_model_key=image_selection.model_key,
+        image_llm_config_key=image_llm_config_selection.config_key,
+        force_image_semantic_recognition=force_image_semantic_recognition,
     )
     if existing is not None:
         return DocumentParsingTaskSubmissionResult(task=existing, reused=True)
 
-    if not force_layout_analysis:
+    if not force_layout_analysis and not force_image_semantic_recognition:
         completed_task = get_latest_succeeded_document_parsing_task_for_file(
             session,
             file_id=file_id,
             layout_model_key=layout_selection.model_key,
             image_model_key=image_selection.model_key,
+            image_llm_config_key=image_llm_config_selection.config_key,
         )
         if completed_task is not None:
             return DocumentParsingTaskSubmissionResult(task=completed_task, reused=True)
@@ -229,7 +278,11 @@ def create_or_reuse_document_parsing_task(
         requested_image_model=image_selection.requested_model,
         target_image_model=image_selection.target_model,
         image_model_key=image_selection.model_key,
+        image_llm_config_id=image_llm_config_selection.config_id,
+        image_llm_config_code=image_llm_config_selection.config_code,
+        image_llm_config_key=image_llm_config_selection.config_key,
         force_layout_analysis=force_layout_analysis,
+        force_image_semantic_recognition=force_image_semantic_recognition,
         layout_task_id=layout_submission.task.id,
         status=DocumentParsingTaskStatus.pending,
     )
@@ -243,6 +296,8 @@ def create_or_reuse_document_parsing_task(
             document_id=document_id,
             layout_model_key=layout_selection.model_key,
             image_model_key=image_selection.model_key,
+            image_llm_config_key=image_llm_config_selection.config_key,
+            force_image_semantic_recognition=force_image_semantic_recognition,
         )
         if existing_after_conflict is not None:
             return DocumentParsingTaskSubmissionResult(task=existing_after_conflict, reused=True)
@@ -526,24 +581,25 @@ def _dispatch_image_items_if_needed(session: Session, *, task: DocumentParsingTa
         if extracted_image is None or extracted_image.id is None:
             raise RuntimeError(f"Extracted image not found for hash={image_ref.file_hash}")
 
-        snapshot = _get_semantic_snapshot(
-            session,
-            extracted_image_id=extracted_image.id,
-            target_model_key=task.image_model_key,
-        )
-        if snapshot is not None:
-            item = DocumentParsingImageItem(
-                document_parsing_task_id=task.id,
-                source_key=image_ref.source_key,
-                file_hash=image_ref.file_hash,
+        if not task.force_image_semantic_recognition:
+            snapshot = _get_semantic_snapshot(
+                session,
                 extracted_image_id=extracted_image.id,
-                semantic_task_id=None,
-                status=DocumentParsingImageItemStatus.succeeded,
-                result_source=DocumentParsingImageItemResultSource.semantic_snapshot,
-                error_message=None,
+                target_model_key=task.image_model_key,
             )
-            session.add(item)
-            continue
+            if snapshot is not None:
+                item = DocumentParsingImageItem(
+                    document_parsing_task_id=task.id,
+                    source_key=image_ref.source_key,
+                    file_hash=image_ref.file_hash,
+                    extracted_image_id=extracted_image.id,
+                    semantic_task_id=None,
+                    status=DocumentParsingImageItemStatus.succeeded,
+                    result_source=DocumentParsingImageItemResultSource.semantic_snapshot,
+                    error_message=None,
+                )
+                session.add(item)
+                continue
 
         submission = create_or_reuse_extracted_image_semantic_task(
             session,
@@ -552,7 +608,8 @@ def _dispatch_image_items_if_needed(session: Session, *, task: DocumentParsingTa
             target_model=task.target_image_model,
             use_target_model=True,
             request_id=str(task.id),
-            overwrite_existing_snapshot=False,
+            config_id=task.image_llm_config_id,
+            overwrite_existing_snapshot=task.force_image_semantic_recognition,
         )
         item = DocumentParsingImageItem(
             document_parsing_task_id=task.id,
