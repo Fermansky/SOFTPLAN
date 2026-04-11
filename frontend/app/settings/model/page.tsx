@@ -940,7 +940,7 @@ export default function ModelSettingsPage() {
 
                   {formError ? <p className="md:col-span-2 text-sm text-destructive">{formError}</p> : null}
                 </CardContent>
-                <CardFooter className="flex flex-col items-stretch justify-between gap-3 border-t border-slate-200 bg-slate-50 xl:mt-4 sm:flex-row sm:items-center">
+                <CardFooter className="flex flex-col items-stretch justify-between gap-3 border-t border-slate-200 bg-slate-50 sm:flex-row sm:items-center">
                   <div className="flex flex-wrap gap-2">
                     {!isCreateMode && detail ? (
                       <AlertDialog>
