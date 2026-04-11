@@ -356,6 +356,7 @@ def execute_layout_analysis_task(task_id: UUID, *, client: FileConvertServiceCli
     """
     file_convert_client = client or get_file_convert_service_client()
     storage = get_minio_storage()
+    _synchronize_document_parsing_tasks(task_id)
 
     with Session(engine) as session:
         task = session.get(LayoutAnalysisTask, task_id)

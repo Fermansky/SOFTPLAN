@@ -18,6 +18,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -33,6 +34,7 @@ import {
   getApiBaseUrl,
   updateDocument,
 } from "@/lib/documents"
+import { ApiLlmConfigListItem, listLlmConfigs } from "@/lib/llm-configs"
 import { PAGE_CONTAINER_CLASS } from "@/lib/layout"
 
 function DocumentDetailSkeleton() {
@@ -116,6 +118,13 @@ function isParsingActive(status: ApiDocumentParsingTask["status"] | null | undef
   return status === "pending" || status === "running"
 }
 
+const SELECT_CLASS_NAME =
+  "flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none transition-all focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50"
+
+function formatParsingLlmConfigOptionLabel(config: ApiLlmConfigListItem) {
+  return `${config.name} (${config.code} / ${config.default_model})`
+}
+
 export default function DocumentDetailPage({ params }: { params: { projectId: string; documentId: string } }) {
   const apiBase = getApiBaseUrl()
 
@@ -131,8 +140,23 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
   const [formError, setFormError] = useState("")
   const [isSaving, setIsSaving] = useState(false)
   const [parsingImageModel, setParsingImageModel] = useState("")
+  const [parsingImageLlmConfigId, setParsingImageLlmConfigId] = useState("")
+  const [forceLayoutAnalysis, setForceLayoutAnalysis] = useState(false)
+  const [forceImageSemanticRecognition, setForceImageSemanticRecognition] = useState(false)
+  const [parsingLlmConfigs, setParsingLlmConfigs] = useState<ApiLlmConfigListItem[]>([])
+  const [isParsingLlmConfigsLoading, setIsParsingLlmConfigsLoading] = useState(false)
+  const [parsingLlmConfigsError, setParsingLlmConfigsError] = useState("")
   const [parsingFormError, setParsingFormError] = useState("")
   const [isStartingParsing, setIsStartingParsing] = useState(false)
+
+  const enabledParsingLlmConfigs = parsingLlmConfigs.filter((config) => config.enabled)
+  const selectedParsingLlmConfig =
+    enabledParsingLlmConfigs.find((config) => config.id === parsingImageLlmConfigId) ?? null
+  const selectedTaskParsingLlmConfig =
+    document?.parsing_task?.image_llm_config_id === parsingImageLlmConfigId ? document.parsing_task : null
+  const showSelectedConfigFallbackOption = Boolean(
+    parsingImageLlmConfigId && !selectedParsingLlmConfig && selectedTaskParsingLlmConfig?.image_llm_config_id
+  )
 
   const loadDocument = useCallback(
     async (signal?: AbortSignal) => {
@@ -238,6 +262,37 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
     }
   }, [document?.parsing_task?.id, document?.parsing_task?.status, params.documentId, params.projectId])
 
+  useEffect(() => {
+    if (!isParsingDialogOpen) {
+      return
+    }
+
+    const controller = new AbortController()
+
+    async function loadParsingLlmConfigs() {
+      try {
+        setIsParsingLlmConfigsLoading(true)
+        const configs = await listLlmConfigs(controller.signal)
+        setParsingLlmConfigs(configs)
+        setParsingLlmConfigsError("")
+      } catch (loadError) {
+        if ((loadError as Error).name === "AbortError") {
+          return
+        }
+
+        const message = loadError instanceof Error ? loadError.message : "加载模型配置列表失败"
+        setParsingLlmConfigs([])
+        setParsingLlmConfigsError(message)
+      } finally {
+        setIsParsingLlmConfigsLoading(false)
+      }
+    }
+
+    void loadParsingLlmConfigs()
+
+    return () => controller.abort()
+  }, [isParsingDialogOpen])
+
   function openEditDialog() {
     if (!document) return
     setName(document.name)
@@ -255,6 +310,9 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
 
   function openParsingDialog() {
     setParsingImageModel(document?.parsing_task?.requested_image_model ?? "")
+    setParsingImageLlmConfigId(document?.parsing_task?.image_llm_config_id ?? "")
+    setForceLayoutAnalysis(forceLayoutAnalysis ?? false)
+    setForceImageSemanticRecognition(forceImageSemanticRecognition ?? false)
     setParsingFormError("")
     setIsParsingDialogOpen(true)
   }
@@ -269,11 +327,14 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
 
   async function startDocumentParsing(forceLayoutAnalysis: boolean) {
     const normalizedImageModel = parsingImageModel.trim()
+    const normalizedImageLlmConfigId = parsingImageLlmConfigId.trim()
     const payload: CreateDocumentParsingTaskPayload = {
       document_id: params.documentId,
       layout_model: "marker",
       image_model: normalizedImageModel || null,
+      image_llm_config_id: normalizedImageLlmConfigId || null,
       force_layout_analysis: forceLayoutAnalysis,
+      force_image_semantic_recognition: forceImageSemanticRecognition,
     }
 
     setParsingFormError("")
@@ -309,12 +370,12 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
   async function handleParsingSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
-    if (document?.parsing_task?.status === "succeeded") {
+    if (forceLayoutAnalysis && document?.parsing_task?.status === "succeeded") {
       setIsOverwriteConfirmOpen(true)
       return
     }
 
-    await startDocumentParsing(false)
+    await startDocumentParsing(forceLayoutAnalysis)
   }
 
   async function handleEditSubmit(event: FormEvent<HTMLFormElement>) {
@@ -544,6 +605,23 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
               <p className="text-xs text-slate-500">当前仅支持 `marker` 作为版面分析模型。</p>
             </div>
 
+            <div className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <Checkbox
+                id="document-force-layout-analysis"
+                checked={forceLayoutAnalysis}
+                onCheckedChange={(checked) => setForceLayoutAnalysis(checked === true)}
+                disabled={isStartingParsing}
+              />
+              <div className="space-y-1">
+                <label htmlFor="document-force-layout-analysis" className="text-sm font-medium text-slate-700">
+                  强制重新执行版面分析
+                </label>
+                <p className="text-sm text-slate-500">
+                  未勾选时会尽量复用已有版面分析结果；勾选后会重新解析文档版面，并刷新当前解析链路。
+                </p>
+              </div>
+            </div>
+
             <div className="grid gap-2">
               <label htmlFor="document-image-model" className="text-sm font-medium text-slate-700">
                 图像模型
@@ -556,6 +634,64 @@ export default function DocumentDetailPage({ params }: { params: { projectId: st
                 disabled={isStartingParsing}
               />
               <p className="text-xs text-slate-500">该参数用于控制图片语义分析，留空会使用默认模型配置。</p>
+            </div>
+
+            <div className="grid gap-2">
+              <label htmlFor="document-image-llm-config" className="text-sm font-medium text-slate-700">
+                图片语义 LLM 配置
+              </label>
+              <select
+                id="document-image-llm-config"
+                className={SELECT_CLASS_NAME}
+                value={parsingImageLlmConfigId}
+                onChange={(event) => setParsingImageLlmConfigId(event.target.value)}
+                disabled={isStartingParsing || isParsingLlmConfigsLoading}
+              >
+                <option value="">当前激活配置</option>
+                {enabledParsingLlmConfigs.map((config) => (
+                  <option key={config.id} value={config.id}>
+                    {formatParsingLlmConfigOptionLabel(config)}
+                  </option>
+                ))}
+                {showSelectedConfigFallbackOption ? (
+                  <option value={parsingImageLlmConfigId}>
+                    {selectedTaskParsingLlmConfig?.image_llm_config_code
+                      ? `当前任务配置（${selectedTaskParsingLlmConfig.image_llm_config_code}）`
+                      : "当前任务配置"}
+                  </option>
+                ) : null}
+              </select>
+              {isParsingLlmConfigsLoading ? (
+                <p className="text-xs text-slate-500">正在加载可用模型配置...</p>
+              ) : parsingLlmConfigsError ? (
+                <p className="text-xs text-amber-600">
+                  {parsingLlmConfigsError}。仍可继续创建任务并使用当前激活配置。
+                </p>
+              ) : enabledParsingLlmConfigs.length === 0 ? (
+                <p className="text-xs text-slate-500">当前没有可选的已启用配置，继续提交将使用当前激活配置。</p>
+              ) : (
+                <p className="text-xs text-slate-500">留空表示使用当前激活配置，也可以为本次图片语义分析绑定指定配置。</p>
+              )}
+            </div>
+
+            <div className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <Checkbox
+                id="document-force-image-semantic-recognition"
+                checked={forceImageSemanticRecognition}
+                onCheckedChange={(checked) => setForceImageSemanticRecognition(checked === true)}
+                disabled={isStartingParsing}
+              />
+              <div className="space-y-1">
+                <label
+                  htmlFor="document-force-image-semantic-recognition"
+                  className="text-sm font-medium text-slate-700"
+                >
+                  强制重新识别图片语义
+                </label>
+                <p className="text-sm text-slate-500">
+                  未勾选时允许复用已有图片语义快照或任务；勾选后会对当前文档图片重新发起语义识别。
+                </p>
+              </div>
             </div>
 
             {parsingFormError ? <p className="text-sm text-destructive">{parsingFormError}</p> : null}

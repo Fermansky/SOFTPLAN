@@ -43,7 +43,10 @@ export type ApiDocumentParsingTask = {
   requested_image_model: string | null
   target_image_model: string | null
   image_model_key: string
+  image_llm_config_id: string | null
+  image_llm_config_code: string | null
   force_layout_analysis: boolean
+  force_image_semantic_recognition: boolean
   layout_task_id: string
   status: "pending" | "running" | "succeeded" | "failed"
   layout_status: "pending" | "running" | "succeeded" | "failed"
@@ -70,7 +73,9 @@ export type CreateDocumentParsingTaskPayload = {
   document_id: string
   layout_model?: string | null
   image_model?: string | null
+  image_llm_config_id?: string | null
   force_layout_analysis?: boolean
+  force_image_semantic_recognition?: boolean
 }
 
 export type UpdateDocumentPayload = {
