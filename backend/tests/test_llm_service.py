@@ -147,6 +147,8 @@ class BackendLlmIntegrationTests(TestCase):
         inspector = inspect(self._engine)
         self.assertTrue(inspector.has_table("llm_chat_records"))
         self.assertTrue(inspector.has_table("llm_configs"))
+        llm_chat_record_columns = {column["name"] for column in inspector.get_columns("llm_chat_records")}
+        self.assertIn("reasoning_content", llm_chat_record_columns)
 
         configs = self._load_configs()
         self.assertEqual(len(configs), 1)
@@ -216,8 +218,123 @@ class BackendLlmIntegrationTests(TestCase):
         self.assertEqual(records[0].status, LlmChatRecordStatus.succeeded)
         self.assertEqual(records[0].llm_config_id, configs[0].id)
         self.assertEqual(records[0].llm_config_code, "default")
+        self.assertEqual(records[0].response_text, "hello world")
+        self.assertIsNone(records[0].reasoning_content)
         self.assertEqual(records[0].upstream_response_request_id, "req-header-1")
         self.assertEqual(records[0].upstream_response_id, "chatcmpl-1")
+
+    def test_chat_persists_explicit_reasoning_content(self):
+        self._start_client()
+
+        with patch(
+            "backend.app.services.llm_service.httpx.post",
+            return_value=_ResponseStub(
+                {
+                    "id": "chatcmpl-reasoning",
+                    "model": "gpt-test",
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "final answer",
+                                "reasoning_content": "reasoning steps",
+                            }
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7},
+                }
+            ),
+        ):
+            response = self.client.post("/llm/chat", json={"prompt": "hello"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["text"], "final answer")
+
+        records = self._load_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].response_text, "final answer")
+        self.assertEqual(records[0].reasoning_content, "reasoning steps")
+
+    def test_chat_splits_reasoning_content_from_think_tag(self):
+        self._start_client()
+
+        with patch(
+            "backend.app.services.llm_service.httpx.post",
+            return_value=_ResponseStub(
+                {
+                    "id": "chatcmpl-think",
+                    "model": "gpt-test",
+                    "choices": [{"message": {"content": "<think>chain of thought</think>final answer"}}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11},
+                }
+            ),
+        ):
+            response = self.client.post("/llm/chat", json={"prompt": "hello"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["text"], "final answer")
+
+        records = self._load_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].response_text, "final answer")
+        self.assertEqual(records[0].reasoning_content, "<think>chain of thought")
+
+    def test_chat_keeps_plain_content_when_no_reasoning_content_exists(self):
+        self._start_client()
+
+        with patch(
+            "backend.app.services.llm_service.httpx.post",
+            return_value=_ResponseStub(
+                {
+                    "id": "chatcmpl-plain",
+                    "model": "gpt-test",
+                    "choices": [{"message": {"content": "plain answer"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }
+            ),
+        ):
+            response = self.client.post("/llm/chat", json={"prompt": "hello"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["text"], "plain answer")
+
+        records = self._load_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].response_text, "plain answer")
+        self.assertIsNone(records[0].reasoning_content)
+
+    def test_chat_normalizes_list_content_before_reasoning_split(self):
+        self._start_client()
+
+        with patch(
+            "backend.app.services.llm_service.httpx.post",
+            return_value=_ResponseStub(
+                {
+                    "id": "chatcmpl-list",
+                    "model": "gpt-test",
+                    "choices": [
+                        {
+                            "message": {
+                                "content": [
+                                    {"type": "text", "text": "<think>reasoning"},
+                                    {"type": "text", "text": "</think>final"},
+                                    {"type": "text", "text": " answer"},
+                                ]
+                            }
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+                }
+            ),
+        ):
+            response = self.client.post("/llm/chat", json={"prompt": "hello"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["text"], "final answer")
+
+        records = self._load_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].response_text, "final answer")
+        self.assertEqual(records[0].reasoning_content, "<think>reasoning")
 
     def test_chat_returns_502_and_persists_failed_record_on_timeout(self):
         self._start_client()

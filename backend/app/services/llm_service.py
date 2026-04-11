@@ -53,6 +53,7 @@ class LlmChatResult:
     model: str
     usage: LlmUsage
     request_id: str | None
+    reasoning_content: str | None = None
     upstream_response_request_id: str | None = None
     upstream_response_id: str | None = None
 
@@ -295,7 +296,26 @@ class LlmServiceClient:
             return 0
         return value
 
-    def _extract_text(self, payload: dict[str, Any]) -> str:
+    def _normalize_message_text(self, value: Any) -> str | None:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            chunks: list[str] = []
+            for item in value:
+                if isinstance(item, dict):
+                    text_chunk = item.get("text")
+                    if isinstance(text_chunk, str):
+                        chunks.append(text_chunk)
+            return "".join(chunks)
+        return None
+
+    def _split_reasoning_content(self, content: str) -> tuple[str, str | None]:
+        if "</think>" not in content:
+            return content, None
+        reasoning_content, response_text = content.split("</think>", 1)
+        return response_text, reasoning_content
+
+    def _extract_text(self, payload: dict[str, Any]) -> tuple[str, str | None]:
         choices = payload.get("choices")
         if not isinstance(choices, list) or not choices:
             raise LlmServiceExecutionError(f"Unexpected upstream payload: {payload!r}")
@@ -308,18 +328,15 @@ class LlmServiceClient:
         if not isinstance(message, dict):
             raise LlmServiceExecutionError(f"Unexpected upstream payload: {payload!r}")
 
-        content = message.get("content")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            chunks: list[str] = []
-            for item in content:
-                if isinstance(item, dict):
-                    text_chunk = item.get("text")
-                    if isinstance(text_chunk, str):
-                        chunks.append(text_chunk)
-            return "".join(chunks)
-        raise LlmServiceExecutionError(f"Unexpected upstream payload: {payload!r}")
+        content = self._normalize_message_text(message.get("content"))
+        if content is None:
+            raise LlmServiceExecutionError(f"Unexpected upstream payload: {payload!r}")
+
+        reasoning_content = self._normalize_message_text(message.get("reasoning_content"))
+        if reasoning_content is not None:
+            return content, reasoning_content
+
+        return self._split_reasoning_content(content)
 
     def _serialize_input_part(self, part: LlmInputPart) -> dict[str, Any]:
         if isinstance(part, LlmTextInputPart):
@@ -793,7 +810,7 @@ class LlmServiceClient:
             raise LlmServiceExecutionError(f"Unexpected upstream payload: {payload!r}")
 
         try:
-            text = self._extract_text(payload)
+            text, reasoning_content = self._extract_text(payload)
         except LlmServiceExecutionError:
             logger.warning(
                 "Embedded LLM payload validation failed",
@@ -834,6 +851,7 @@ class LlmServiceClient:
             model=resolved_model,
             usage=usage,
             request_id=final_request_id,
+            reasoning_content=reasoning_content,
             upstream_response_request_id=response_request_id,
             upstream_response_id=payload_id,
         )

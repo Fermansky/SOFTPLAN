@@ -57,6 +57,7 @@ class LlmChatRecord(SQLModel, table=True):
     completion_tokens: int = Field(default=0, sa_column=Column(Integer, nullable=False, default=0))
     total_tokens: int = Field(default=0, sa_column=Column(Integer, nullable=False, default=0))
     response_text: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    reasoning_content: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     error_message: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     upstream_base_url: str = Field(sa_column=Column(Text, nullable=False))
     upstream_response_request_id: str | None = Field(default=None, sa_column=Column(Text, nullable=True))

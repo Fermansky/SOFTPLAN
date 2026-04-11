@@ -118,6 +118,7 @@ def persist_llm_chat_record(
         completion_tokens=result.usage.completion_tokens if result is not None else 0,
         total_tokens=result.usage.total_tokens if result is not None else 0,
         response_text=result.text if result is not None else None,
+        reasoning_content=result.reasoning_content if result is not None else None,
         error_message=error_message,
         upstream_base_url=upstream_base_url,
         upstream_response_request_id=result.upstream_response_request_id if result is not None else None,

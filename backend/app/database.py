@@ -276,6 +276,7 @@ def _ensure_llm_chat_record_columns() -> None:
         [
             "ALTER TABLE llm_chat_records ADD COLUMN IF NOT EXISTS llm_config_id UUID",
             "ALTER TABLE llm_chat_records ADD COLUMN IF NOT EXISTS llm_config_code TEXT",
+            "ALTER TABLE llm_chat_records ADD COLUMN IF NOT EXISTS reasoning_content TEXT",
             "CREATE INDEX IF NOT EXISTS ix_llm_chat_records_llm_config_id ON llm_chat_records (llm_config_id)",
             "CREATE INDEX IF NOT EXISTS ix_llm_chat_records_llm_config_code ON llm_chat_records (llm_config_code)",
         ]
