@@ -15,8 +15,10 @@ import logging
 import os
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import PurePosixPath
 from uuid import UUID
 
+from minio.error import S3Error
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlmodel import Session, select
 
@@ -24,7 +26,8 @@ from ..database import engine
 from ..models import LayoutAnalysisTask, LayoutAnalysisTaskStatus
 from ..models.common import utc_now
 from .extracted_image_persistence_service import ExtractedImagePersistenceError, persist_extracted_images
-from .file_convert_service import FileConvertServiceClient, get_file_convert_service_client
+from .file_convert_service import FileConvertServiceClient, UploadedImageMetadata, get_file_convert_service_client
+from .minio_storage import MinioStorage, get_minio_storage
 
 logger = logging.getLogger(__name__)
 
@@ -313,6 +316,36 @@ def _is_reusable_layout_result_source(task: LayoutAnalysisTask | None) -> bool:
 
 
 
+def _resolve_pdf_filename(storage_key: str) -> str:
+    """Map a stored object key to a safe PDF filename for multipart upload."""
+    filename = PurePosixPath(storage_key).name.strip() or "document.pdf"
+    if not filename.lower().endswith(".pdf"):
+        return "document.pdf"
+    return filename
+
+
+def _upload_inline_images_to_storage(storage: MinioStorage, parsing_result) -> list[UploadedImageMetadata]:
+    """Upload inline images returned by file-convert-service to backend MinIO."""
+    uploaded_images: list[UploadedImageMetadata] = []
+    for item in parsing_result.inline_images:
+        storage_ref = storage.upload_image_bytes(item.payload, content_type=item.content_type)
+        stored_extension = PurePosixPath(storage_ref.storage_key).suffix.lower() or None
+        uploaded_images.append(
+            UploadedImageMetadata(
+                source_key=item.source_key,
+                file_hash=item.file_hash,
+                storage_bucket=storage_ref.bucket,
+                storage_key=storage_ref.storage_key,
+                file_size=item.file_size,
+                content_type=item.content_type,
+                extension=stored_extension,
+                width=item.width,
+                height=item.height,
+            )
+        )
+    return uploaded_images
+
+
 def execute_layout_analysis_task(task_id: UUID, *, client: FileConvertServiceClient | None = None) -> None:
     """执行单个已被 claim 为 running 的版面分析任务。
 
@@ -322,6 +355,7 @@ def execute_layout_analysis_task(task_id: UUID, *, client: FileConvertServiceCli
     - 无论成功还是失败，都会回灌关联的 `DocumentParsingTask` 聚合状态。
     """
     file_convert_client = client or get_file_convert_service_client()
+    storage = get_minio_storage()
 
     with Session(engine) as session:
         task = session.get(LayoutAnalysisTask, task_id)
@@ -349,8 +383,22 @@ def execute_layout_analysis_task(task_id: UUID, *, client: FileConvertServiceCli
                 task.layout_result_source_task_id = None
 
         if markdown is None:
-            parsing_result, error = file_convert_client.convert_pdf_to_markdown(
-                storage_key=task.storage_key,
+            try:
+                pdf_payload = storage.download_bytes(task.storage_key, bucket=task.storage_bucket)
+            except S3Error as exc:
+                logger.warning(
+                    "layout analysis task failed to download source PDF, task_id=%s, storage_key=%s, error=%s",
+                    task_id,
+                    task.storage_key,
+                    exc.code,
+                )
+                _mark_task_failed(session, task=task, error_message=f"Source PDF download failed: {exc.code}")
+                _synchronize_document_parsing_tasks(task.id)
+                return
+
+            parsing_result, error = file_convert_client.convert_pdf_to_markdown_from_file(
+                filename=_resolve_pdf_filename(task.storage_key),
+                payload=pdf_payload,
                 task_id=str(task.id),
                 model=task.target_layout_model,
             )
@@ -363,8 +411,9 @@ def execute_layout_analysis_task(task_id: UUID, *, client: FileConvertServiceCli
             markdown = parsing_result.markdown
             image_hashes = dict(parsing_result.image_hashes or {})
             try:
-                persist_extracted_images(session, uploaded_images=parsing_result.uploaded_images)
-            except (ExtractedImagePersistenceError, SQLAlchemyError):
+                uploaded_images = _upload_inline_images_to_storage(storage, parsing_result)
+                persist_extracted_images(session, uploaded_images=uploaded_images)
+            except (ExtractedImagePersistenceError, SQLAlchemyError, S3Error):
                 logger.exception("Failed to persist extracted images for layout analysis task, task_id=%s", task_id)
                 _mark_task_failed(session, task=task, error_message="Failed to persist extracted images")
                 _synchronize_document_parsing_tasks(task.id)

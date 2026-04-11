@@ -41,6 +41,7 @@ from .extracted_image_semantic_task_service import (
 )
 from .file_convert_service import (
     FileConvertServiceClient,
+    InlineImageData,
     PdfToMarkdownResult,
     UploadedImageMetadata,
     get_file_convert_service_client,
@@ -105,6 +106,7 @@ __all__ = [
     "ExtractedImageSemanticPromptError",
     "ExtractedImageSemanticTaskSubmissionResult",
     "FileConvertServiceClient",
+    "InlineImageData",
     "LayoutAnalysisTaskSubmissionResult",
     "LlmChatPersistenceError",
     "LlmChatResult",

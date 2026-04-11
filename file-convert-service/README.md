@@ -37,3 +37,8 @@ The service uses these environment variables:
   - Optional trace header: `X-Convert-Task-Id: <backend-task-id>`
   - Response JSON: `{"storage_key": "<object-key>.pdf", "markdown": "...", "image_hashes": {"<images_key>": "<sha256>"}, "uploaded_images": [{"source_key": "...", "file_hash": "...", "storage_bucket": "...", "storage_key": "...", "file_size": 123, "content_type": "image/png", "extension": ".png", "width": 100, "height": 200}]}`
   - Rendered images are serialized by key suffix when recognized (`jpg/jpeg/png/webp/gif/bmp/tiff`); unknown or failed format serialization falls back to PNG.
+- `POST /internal/converters/pdf-to-markdown/file` convert an uploaded PDF to Markdown text and return extracted images inline
+  - Request type: `multipart/form-data`
+  - Form fields: `file=<uploaded .pdf>`, optional `model=marker`
+  - Response JSON: `{"filename": "demo.pdf", "markdown": "...", "image_hashes": {"<images_key>": "<sha256>"}, "images": [{"source_key": "...", "file_hash": "...", "file_size": 123, "content_type": "image/png", "extension": ".png", "width": 100, "height": 200, "content_base64": "..."}]}`
+  - This path does not read or write MinIO, so it can be used when `file-convert-service` cannot directly access the same object storage as the caller.

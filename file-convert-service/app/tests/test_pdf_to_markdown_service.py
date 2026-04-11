@@ -14,6 +14,7 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 MarkerPdfToMarkdownConverter = MODULE.MarkerPdfToMarkdownConverter
 PdfMarkdownConvertResult = MODULE.PdfMarkdownConvertResult
+PdfMarkdownRenderResult = MODULE.PdfMarkdownRenderResult
 
 
 class _UploadResult:
@@ -72,6 +73,29 @@ class MarkerPdfToMarkdownConverterTests(TestCase):
         self.assertEqual(result.uploaded_images, [])
         self.assertIsInstance(captured["arg"], io.BytesIO)
         self.assertEqual(captured["arg"].getvalue(), b"%PDF-1.7\n")
+
+    def test_render_returns_serialized_images_without_upload(self):
+        converter = MarkerPdfToMarkdownConverter.__new__(MarkerPdfToMarkdownConverter)
+
+        png_payload = b"png-encoded"
+        image = _FakeImage(png_payload, width=123, height=456)
+        converter._pdf_converter = lambda file_input: "rendered-object"
+        converter._text_from_rendered = lambda rendered: ("# markdown", None, {"diagram.png": image})
+
+        result = converter.render(b"%PDF-1.7\n")
+
+        self.assertIsInstance(result, PdfMarkdownRenderResult)
+        self.assertEqual(result.markdown, "# markdown")
+        self.assertEqual(result.image_hashes, {"diagram.png": hashlib.sha256(png_payload).hexdigest()})
+        self.assertEqual(len(result.images), 1)
+        self.assertEqual(result.images[0].source_key, "diagram.png")
+        self.assertEqual(result.images[0].file_hash, hashlib.sha256(png_payload).hexdigest())
+        self.assertEqual(result.images[0].payload, png_payload)
+        self.assertEqual(result.images[0].file_size, len(png_payload))
+        self.assertEqual(result.images[0].content_type, "image/png")
+        self.assertEqual(result.images[0].extension, ".png")
+        self.assertEqual(result.images[0].width, 123)
+        self.assertEqual(result.images[0].height, 456)
 
     def test_convert_uploads_images_using_format_inferred_from_key(self):
         converter = MarkerPdfToMarkdownConverter.__new__(MarkerPdfToMarkdownConverter)
