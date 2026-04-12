@@ -83,6 +83,16 @@ class RouterTests(TestCase):
         self.assertEqual(response.health_path, "/health")
         self.assertIsNone(response.error)
 
+    def test_get_document_parsing_availability_available_false_when_unconfigured(self):
+        response = document_parsing.get_document_parsing_availability(
+            client=_ClientStub(available=False, availability_error="file-convert-service base URL is not configured")
+        )
+
+        self.assertFalse(response.available)
+        self.assertEqual(response.service, "file-convert-service")
+        self.assertIsNone(response.health_path)
+        self.assertEqual(response.error, "file-convert-service base URL is not configured")
+
     def test_create_document_parsing_task_returns_aggregate_fields(self):
         document, file_record = self._build_pdf_document_and_file()
         session = _SessionStub()

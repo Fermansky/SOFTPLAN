@@ -2,11 +2,27 @@
 
 Independent FastAPI service scaffold for file conversion workloads.
 
+This service is now deployed independently from the default project `docker compose` stack. The main stack no longer starts it automatically.
+
 ## Local Run
 
 ```bash
 pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+## Docker Run
+
+Build the image from the repo root:
+
+```bash
+docker build -f file-convert-service/Dockerfile -t softplan-file-convert-service .
+```
+
+Run it separately and point backend `FILE_CONVERT_SERVICE_BASE_URL` to this host:
+
+```bash
+docker run --rm -p 8000:8000 softplan-file-convert-service
 ```
 
 ## MinIO Config
@@ -41,4 +57,4 @@ The service uses these environment variables:
   - Request type: `multipart/form-data`
   - Form fields: `file=<uploaded .pdf>`, optional `model=marker`
   - Response JSON: `{"filename": "demo.pdf", "markdown": "...", "image_hashes": {"<images_key>": "<sha256>"}, "images": [{"source_key": "...", "file_hash": "...", "file_size": 123, "content_type": "image/png", "extension": ".png", "width": 100, "height": 200, "content_base64": "..."}]}`
-  - This path does not read or write MinIO, so it can be used when `file-convert-service` cannot directly access the same object storage as the caller.
+  - This path does not read or write MinIO, so it can be used when `file-convert-service` is deployed on a different host and cannot directly access the same object storage as the caller.

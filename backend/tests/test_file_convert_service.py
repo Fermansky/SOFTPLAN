@@ -26,6 +26,30 @@ class _ResponseStub:
 
 
 class FileConvertServiceClientTests(TestCase):
+    def test_check_availability_returns_false_when_base_url_is_missing(self):
+        client = FileConvertServiceClient(base_url=None)
+
+        available, error = client.check_availability()
+
+        self.assertFalse(available)
+        self.assertEqual(error, "file-convert-service base URL is not configured")
+
+    def test_check_availability_returns_false_when_base_url_is_invalid(self):
+        client = FileConvertServiceClient(base_url="not-a-url")
+
+        available, error = client.check_availability()
+
+        self.assertFalse(available)
+        self.assertEqual(error, "file-convert-service base URL is invalid: 'not-a-url'")
+
+    def test_convert_pdf_to_markdown_from_file_returns_error_when_base_url_is_missing(self):
+        client = FileConvertServiceClient(base_url=None)
+
+        result, error = client.convert_pdf_to_markdown_from_file(filename="demo.pdf", payload=b"%PDF-1.7\n")
+
+        self.assertIsNone(result)
+        self.assertEqual(error, "file-convert-service base URL is not configured")
+
     def test_convert_pdf_to_markdown_from_file_parses_inline_images(self):
         client = FileConvertServiceClient(base_url="http://file-convert-service:8000")
         inline_payload = b"png-payload"
@@ -106,6 +130,18 @@ class FileConvertServiceClientTests(TestCase):
 
         self.assertIsNone(result)
         self.assertIn("Unexpected convert response payload", error or "")
+
+    def test_check_availability_wraps_request_error(self):
+        client = FileConvertServiceClient(base_url="http://file-convert-service:8000")
+
+        with patch(
+            "backend.app.services.file_convert_service.httpx.get",
+            side_effect=httpx.ConnectError("connection refused"),
+        ):
+            available, error = client.check_availability()
+
+        self.assertFalse(available)
+        self.assertIn("file-convert-service health check failed", error or "")
 
     def test_convert_pdf_to_markdown_from_file_rejects_file_hash_mismatch(self):
         client = FileConvertServiceClient(base_url="http://file-convert-service:8000")

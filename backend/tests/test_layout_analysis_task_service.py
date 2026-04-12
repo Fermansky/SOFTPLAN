@@ -163,6 +163,41 @@ class LayoutAnalysisTaskServiceTests(TestCase):
         self.assertEqual(task.error_message, "upstream failed")
         synchronize_mock.assert_called_once_with(task.id)
 
+    def test_execute_layout_analysis_task_marks_failed_when_file_convert_service_is_unconfigured(self):
+        task = LayoutAnalysisTask(
+            id=uuid4(),
+            document_id=uuid4(),
+            file_id=uuid4(),
+            storage_bucket="softplan",
+            storage_key="documents/a.pdf",
+            target_layout_model="marker",
+            layout_model_key="marker",
+            status=LayoutAnalysisTaskStatus.running,
+        )
+        session = _WorkerSessionStub(task=task)
+        storage = _StorageStub()
+        client = SimpleNamespace(
+            convert_pdf_to_markdown_from_file=lambda **kwargs: (
+                None,
+                "file-convert-service base URL is not configured",
+            )
+        )
+
+        with patch.object(service, "Session", return_value=session), patch.object(
+            service,
+            "get_minio_storage",
+            return_value=storage,
+        ), patch.object(
+            service,
+            "_synchronize_document_parsing_tasks",
+        ) as synchronize_mock:
+            service.execute_layout_analysis_task(task.id, client=client)
+
+        self.assertTrue(session.committed)
+        self.assertEqual(task.status, LayoutAnalysisTaskStatus.failed)
+        self.assertEqual(task.error_message, "file-convert-service base URL is not configured")
+        synchronize_mock.assert_called_once_with(task.id)
+
     def test_execute_layout_analysis_task_uploads_inline_images_and_persists_result(self):
         task = LayoutAnalysisTask(
             id=uuid4(),

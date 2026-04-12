@@ -16,14 +16,19 @@ Then start the stack:
 docker compose up --build
 ```
 
+`docker compose` no longer starts `file-convert-service` by default. If you want document parsing to work, run that service separately and set `FILE_CONVERT_SERVICE_BASE_URL` in `.env`.
+
 ## Services
 
 - Frontend: http://localhost:3000
 - Backend: http://localhost:8000/health
 - Backend Docs: http://localhost:8000/docs
-- File Convert Service: http://localhost:8010/health
 - MinIO API: http://localhost:10000
 - MinIO Console: http://localhost:10001
+
+Optional external service:
+
+- File Convert Service: configure `FILE_CONVERT_SERVICE_BASE_URL` to your independently deployed instance, for example `http://file-convert-host:8000`
 
 ## Logging
 
@@ -35,6 +40,7 @@ docker compose up --build
 ## Notes
 
 - `backend` 现在是唯一的 LLM 宿主，负责上游模型调用和 `llm_chat_records` 审计落库。
+- 未配置 `FILE_CONVERT_SERVICE_BASE_URL` 时，API 仍可正常启动，但 `/document-parsing/*` 相关能力会在执行阶段失败，`/document-parsing/availability` 会返回不可用。
 - `GET /llm/availability` 检查的是 `backend` 内嵌 LLM 模块的本地配置。
 - 如果 `POST /llm/chat` 返回 502，优先检查 `api` 容器日志；如果返回 500，说明上游成功但审计持久化失败。
 - `POST /extracted-images/{image_id}/semantic-description` 继续基于已落库图片执行语义描述，但底层调用已经直接走 `backend` 内嵌 LLM 模块。

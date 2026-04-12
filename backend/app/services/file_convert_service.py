@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import PurePosixPath
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -58,17 +59,42 @@ class FileConvertServiceClient:
     def __init__(
         self,
         *,
-        base_url: str,
+        base_url: str | None,
         timeout_seconds: float = 3.0,
         convert_timeout_seconds: float = 120.0,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        normalized_base_url = (base_url or "").strip()
+        self.base_url = normalized_base_url.rstrip("/") if normalized_base_url else None
         self.timeout_seconds = timeout_seconds
         self.convert_timeout_seconds = convert_timeout_seconds
 
+    def _resolve_base_url(self) -> tuple[str | None, str | None]:
+        if self.base_url is None:
+            return None, "file-convert-service base URL is not configured"
+
+        parsed = urlparse(self.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return None, f"file-convert-service base URL is invalid: {self.base_url!r}"
+        return self.base_url, None
+
+    def _build_health_url(self) -> tuple[str | None, str | None]:
+        base_url, error = self._resolve_base_url()
+        if error is not None or base_url is None:
+            return None, error
+        return f"{base_url}/health", None
+
+    def _build_convert_url(self, path: str) -> tuple[str | None, str | None]:
+        base_url, error = self._resolve_base_url()
+        if error is not None or base_url is None:
+            return None, error
+        return f"{base_url}{path}", None
+
     def check_availability(self) -> tuple[bool, str | None]:
         """Check file-convert-service health."""
-        health_url = f"{self.base_url}/health"
+        health_url, error = self._build_health_url()
+        if error is not None or health_url is None:
+            return False, error
+
         request_id = get_request_id()
         request_headers = {REQUEST_ID_HEADER: request_id} if request_id is not None else None
         try:
@@ -76,7 +102,7 @@ class FileConvertServiceClient:
             response.raise_for_status()
             payload = response.json()
         except Exception as exc:
-            return False, str(exc)
+            return False, f"file-convert-service health check failed: {exc}"
 
         status_value = payload.get("status") if isinstance(payload, dict) else None
         if status_value != "ok":
@@ -212,7 +238,10 @@ class FileConvertServiceClient:
         model: str | None = None,
     ) -> tuple[PdfToMarkdownResult | None, str | None]:
         """Call the legacy storage-key API."""
-        convert_url = f"{self.base_url}/internal/converters/pdf-to-markdown"
+        convert_url, error = self._build_convert_url("/internal/converters/pdf-to-markdown")
+        if error is not None or convert_url is None:
+            return None, error
+
         resolved_request_id = get_request_id() or task_id
         request_headers: dict[str, str] | None = None
         if resolved_request_id is not None:
@@ -235,7 +264,7 @@ class FileConvertServiceClient:
             response.raise_for_status()
             payload = response.json()
         except Exception as exc:
-            return None, str(exc)
+            return None, f"file-convert-service request failed: {exc}"
 
         if not isinstance(payload, dict):
             return None, f"Unexpected convert response payload: {payload!r}"
@@ -265,7 +294,10 @@ class FileConvertServiceClient:
         model: str | None = None,
     ) -> tuple[PdfToMarkdownResult | None, str | None]:
         """Call the file-upload API and receive inline images."""
-        convert_url = f"{self.base_url}/internal/converters/pdf-to-markdown/file"
+        convert_url, error = self._build_convert_url("/internal/converters/pdf-to-markdown/file")
+        if error is not None or convert_url is None:
+            return None, error
+
         resolved_request_id = get_request_id() or task_id
         request_headers: dict[str, str] | None = None
         if resolved_request_id is not None:
@@ -290,7 +322,7 @@ class FileConvertServiceClient:
             response.raise_for_status()
             response_payload = response.json()
         except Exception as exc:
-            return None, str(exc)
+            return None, f"file-convert-service request failed: {exc}"
 
         if not isinstance(response_payload, dict):
             return None, f"Unexpected convert response payload: {response_payload!r}"
@@ -315,7 +347,7 @@ class FileConvertServiceClient:
 @lru_cache(maxsize=1)
 def get_file_convert_service_client() -> FileConvertServiceClient:
     """Build the singleton client from environment variables."""
-    base_url = os.getenv("FILE_CONVERT_SERVICE_BASE_URL", "http://file-convert-service:8000")
+    base_url = os.getenv("FILE_CONVERT_SERVICE_BASE_URL")
     timeout_seconds = float(os.getenv("FILE_CONVERT_SERVICE_TIMEOUT_SECONDS", "3"))
     convert_timeout_seconds = float(os.getenv("FILE_CONVERT_SERVICE_CONVERT_TIMEOUT_SECONDS", "120"))
     return FileConvertServiceClient(
