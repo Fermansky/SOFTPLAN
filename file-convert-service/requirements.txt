@@ -1,7 +1,0 @@
-﻿fastapi==0.112.0
-uvicorn[standard]==0.30.3
-python-multipart==0.0.22
-minio==7.2.7
-marker-pdf
-python-json-logger==2.0.7
-asgi-correlation-id==4.3.4
