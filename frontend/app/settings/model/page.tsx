@@ -40,11 +40,15 @@ import {
   ApiLlmConfigListItem,
   createLlmConfig,
   deleteLlmConfig,
+  fetchLlmConfigModels,
   fetchLlmConfig,
   listLlmConfigs,
   LlmConfigProvider,
+  LlmConfigModelsResult,
   LlmConfigValidationResult,
   LlmValidationDepth,
+  PreviewLlmConfigModelsPayload,
+  previewLlmConfigModels,
   updateLlmConfig,
   validateLlmConfig,
 } from "@/lib/llm-configs"
@@ -78,6 +82,13 @@ type FormState = {
   createAndActivate: boolean
 }
 
+type ModelInputMode = "select" | "manual"
+
+type ModelProbeRequest =
+  | { kind: "saved"; signature: string; configId: string }
+  | { kind: "preview"; signature: string; payload: PreviewLlmConfigModelsPayload }
+  | { kind: "unavailable"; signature: null; reason: string | null }
+
 function createEmptyForm(): FormState {
   return {
     code: "",
@@ -103,6 +114,88 @@ function createFormFromConfig(config: ApiLlmConfig): FormState {
     timeoutSeconds: String(config.timeout_seconds),
     enabled: config.enabled,
     createAndActivate: false,
+  }
+}
+
+function normalizeTimeoutSeconds(value: string): number | null {
+  const timeoutSeconds = Number(value)
+  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
+    return null
+  }
+  return timeoutSeconds
+}
+
+function buildSecretFingerprint(value: string): string {
+  let hash = 0
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0
+  }
+  return `${value.length}:${hash.toString(16)}`
+}
+
+function resolveModelProbeRequest({
+  isCreateMode,
+  detail,
+  form,
+}: {
+  isCreateMode: boolean
+  detail: ApiLlmConfig | null
+  form: FormState
+}): ModelProbeRequest {
+  const normalizedBaseUrl = form.baseUrl.trim()
+  const normalizedApiKey = form.apiKey.trim()
+  const normalizedTimeout = normalizeTimeoutSeconds(form.timeoutSeconds)
+
+  if (!normalizedBaseUrl || normalizedTimeout === null) {
+    return {
+      kind: "unavailable",
+      signature: null,
+      reason: "填写基础地址和超时时间后，会自动尝试获取模型列表。",
+    }
+  }
+
+  if (!isCreateMode && !detail) {
+    return {
+      kind: "unavailable",
+      signature: null,
+      reason: null,
+    }
+  }
+
+  if (
+    !isCreateMode &&
+    detail &&
+    detail.provider === form.provider &&
+    detail.base_url === normalizedBaseUrl &&
+    detail.timeout_seconds === normalizedTimeout &&
+    !normalizedApiKey
+  ) {
+    return {
+      kind: "saved",
+      signature: `saved:${detail.id}`,
+      configId: detail.id,
+    }
+  }
+
+  if (!normalizedApiKey) {
+    return {
+      kind: "unavailable",
+      signature: null,
+      reason: isCreateMode
+        ? "填写基础地址、超时时间和 API Key 后，会自动尝试获取模型列表。"
+        : "如需基于未保存连接参数重新获取模型列表，请先填写 API Key；否则可先手动填写并保存。",
+    }
+  }
+
+  return {
+    kind: "preview",
+    signature: `preview:${form.provider}:${normalizedBaseUrl}:${normalizedTimeout}:${buildSecretFingerprint(normalizedApiKey)}`,
+    payload: {
+      provider: form.provider,
+      base_url: normalizedBaseUrl,
+      api_key: normalizedApiKey,
+      timeout_seconds: normalizedTimeout,
+    },
   }
 }
 
@@ -289,6 +382,11 @@ export default function ModelSettingsPage() {
   const [validationDepth, setValidationDepth] = useState<LlmValidationDepth>("strict")
   const [validationResult, setValidationResult] = useState<LlmConfigValidationResult | null>(null)
   const [validationForId, setValidationForId] = useState<string | null>(null)
+  const [modelOptions, setModelOptions] = useState<string[]>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelsResult, setModelsResult] = useState<LlmConfigModelsResult | null>(null)
+  const [modelInputMode, setModelInputMode] = useState<ModelInputMode>("manual")
+  const [lastProbeSignature, setLastProbeSignature] = useState<string | null>(null)
 
   const [isSaving, setIsSaving] = useState(false)
   const [isValidating, setIsValidating] = useState(false)
@@ -299,6 +397,31 @@ export default function ModelSettingsPage() {
   const selectedListItem = selectedConfigId ? configs.find((config) => config.id === selectedConfigId) ?? null : null
   const isCreateMode = mode === "create"
   const currentValidationResult = validationForId === detail?.id ? validationResult : null
+  const modelProbeRequest = resolveModelProbeRequest({ isCreateMode, detail, form })
+  const currentModelValue = form.defaultModel.trim()
+  const currentModelInOptions = !currentModelValue || modelOptions.includes(currentModelValue)
+  const canRefreshModelOptions = modelProbeRequest.kind !== "unavailable"
+  const hasModelOptions = modelOptions.length > 0
+  const shouldHighlightModelMismatch = hasModelOptions && Boolean(currentModelValue) && !currentModelInOptions
+
+  let modelHelperMessage = "填写默认模型名，保存时将作为当前配置的默认模型。"
+  let modelHelperTone = "text-slate-500"
+
+  if (modelsLoading) {
+    modelHelperMessage = "正在获取可用模型列表..."
+  } else if (shouldHighlightModelMismatch) {
+    modelHelperMessage = "当前值未出现在已探测列表中，可继续手动保存，或切换回模型列表重新选择。"
+    modelHelperTone = "text-amber-600"
+  } else if (modelsResult?.success && hasModelOptions) {
+    modelHelperMessage = `已获取 ${modelOptions.length} 个可用模型${modelsResult.latency_ms !== null ? `，耗时 ${modelsResult.latency_ms} ms` : ""}。`
+  } else if (modelsResult && !modelsResult.success) {
+    modelHelperMessage = modelsResult.error_message
+      ? `无法获取模型列表：${modelsResult.error_message}`
+      : "暂时无法获取模型列表，请手动填写默认模型。"
+    modelHelperTone = "text-amber-600"
+  } else if (modelProbeRequest.kind === "unavailable" && modelProbeRequest.reason) {
+    modelHelperMessage = modelProbeRequest.reason
+  }
 
   async function loadConfigs(options?: {
     preferredId?: string | null
@@ -327,6 +450,7 @@ export default function ModelSettingsPage() {
         setValidationResult(null)
         setValidationForId(null)
         setForm(createEmptyForm())
+        resetModelOptions()
         return
       }
 
@@ -397,6 +521,24 @@ export default function ModelSettingsPage() {
     return () => controller.abort()
   }, [mode, selectedConfigId])
 
+  useEffect(() => {
+    resetModelOptions()
+  }, [modelProbeRequest.signature])
+
+  useEffect(() => {
+    if (detailLoading || modelProbeRequest.kind === "unavailable" || !modelProbeRequest.signature) {
+      return
+    }
+
+    if (lastProbeSignature === modelProbeRequest.signature) {
+      return
+    }
+
+    const controller = new AbortController()
+    void runModelProbe(modelProbeRequest, { signal: controller.signal })
+    return () => controller.abort()
+  }, [detailLoading, lastProbeSignature, modelProbeRequest])
+
   function startCreateMode() {
     setMode("create")
     setSelectedConfigId(null)
@@ -406,6 +548,7 @@ export default function ModelSettingsPage() {
     setValidationResult(null)
     setValidationForId(null)
     setForm(createEmptyForm())
+    resetModelOptions()
   }
 
   function selectConfig(configId: string) {
@@ -418,10 +561,98 @@ export default function ModelSettingsPage() {
       setValidationResult(null)
       setValidationForId(null)
     }
+    resetModelOptions()
   }
 
   function updateForm<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }))
+  }
+
+  function resetModelOptions() {
+    setModelOptions([])
+    setModelsResult(null)
+    setModelInputMode("manual")
+    setLastProbeSignature(null)
+  }
+
+  function switchToManualModelInput() {
+    setModelInputMode("manual")
+  }
+
+  function switchToModelSelect() {
+    if (modelOptions.length === 0) {
+      return
+    }
+    if (!modelOptions.includes(form.defaultModel.trim())) {
+      updateForm("defaultModel", "")
+    }
+    setModelInputMode("select")
+  }
+
+  function applyModelProbeResult(result: LlmConfigModelsResult, defaultModelValue: string) {
+    const nextOptions = result.success ? result.model_ids : []
+    setModelsResult(result)
+    setModelOptions(nextOptions)
+
+    if (nextOptions.length === 0) {
+      setModelInputMode("manual")
+      return
+    }
+
+    if (defaultModelValue && !nextOptions.includes(defaultModelValue)) {
+      setModelInputMode("manual")
+      return
+    }
+
+    setModelInputMode("select")
+  }
+
+  async function runModelProbe(
+    request: Exclude<ModelProbeRequest, { kind: "unavailable" }>,
+    options?: { force?: boolean; signal?: AbortSignal }
+  ) {
+    if (!options?.force && lastProbeSignature === request.signature) {
+      return
+    }
+
+    const defaultModelValue = form.defaultModel.trim()
+    setLastProbeSignature(request.signature)
+    setModelsLoading(true)
+
+    try {
+      const result =
+        request.kind === "saved"
+          ? await fetchLlmConfigModels(request.configId, options?.signal)
+          : await previewLlmConfigModels(request.payload, options?.signal)
+      applyModelProbeResult(result, defaultModelValue)
+    } catch (error) {
+      if ((error as Error).name === "AbortError") {
+        return
+      }
+
+      const message = error instanceof Error ? error.message : "获取模型列表失败，请重试。"
+      setModelOptions([])
+      setModelsResult({
+        success: false,
+        normalized_base_url: form.baseUrl.trim(),
+        model_ids: [],
+        latency_ms: null,
+        http_status: null,
+        error_code: "request_failed",
+        error_message: message,
+      })
+      setModelInputMode("manual")
+    } finally {
+      setModelsLoading(false)
+    }
+  }
+
+  async function handleRefreshModelOptions() {
+    if (modelProbeRequest.kind === "unavailable") {
+      return
+    }
+
+    await runModelProbe(modelProbeRequest, { force: true })
   }
 
   function buildValidatedPayload() {
@@ -864,15 +1095,71 @@ export default function ModelSettingsPage() {
                   </div>
 
                   <div className="grid gap-2 md:col-span-2">
-                    <Label htmlFor="llm-config-default-model">默认模型</Label>
-                    <Input
-                      id="llm-config-default-model"
-                      value={form.defaultModel}
-                      onChange={(event) => updateForm("defaultModel", event.target.value)}
-                      placeholder="例如：gpt-4.1-mini"
-                      disabled={isSaving || isValidating || isActivating}
-                      required
-                    />
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <Label htmlFor="llm-config-default-model">默认模型</Label>
+                      <div className="flex flex-wrap gap-2">
+                        {hasModelOptions ? (
+                          modelInputMode === "select" ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-8 px-3 text-xs"
+                              onClick={switchToManualModelInput}
+                              disabled={isSaving || isValidating || isActivating || detailLoading}
+                            >
+                              手动输入
+                            </Button>
+                          ) : (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-8 px-3 text-xs"
+                              onClick={switchToModelSelect}
+                              disabled={isSaving || isValidating || isActivating || detailLoading}
+                            >
+                              使用模型列表
+                            </Button>
+                          )
+                        ) : null}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-8 px-3 text-xs"
+                          onClick={() => void handleRefreshModelOptions()}
+                          disabled={!canRefreshModelOptions || isSaving || isValidating || isActivating || detailLoading}
+                        >
+                          {modelsLoading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCcw className="size-3.5" />}
+                          刷新模型列表
+                        </Button>
+                      </div>
+                    </div>
+                    {hasModelOptions && modelInputMode === "select" ? (
+                      <select
+                        id="llm-config-default-model"
+                        className={SELECT_CLASS_NAME}
+                        value={form.defaultModel}
+                        onChange={(event) => updateForm("defaultModel", event.target.value)}
+                        disabled={isSaving || isValidating || isActivating}
+                        required
+                      >
+                        <option value="">请选择默认模型</option>
+                        {modelOptions.map((modelId) => (
+                          <option key={modelId} value={modelId}>
+                            {modelId}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <Input
+                        id="llm-config-default-model"
+                        value={form.defaultModel}
+                        onChange={(event) => updateForm("defaultModel", event.target.value)}
+                        placeholder="例如：gpt-4.1-mini"
+                        disabled={isSaving || isValidating || isActivating}
+                        required
+                      />
+                    )}
+                    <p className={cn("text-xs", modelHelperTone)}>{modelHelperMessage}</p>
                   </div>
 
                   <div className="grid gap-2 md:col-span-2">

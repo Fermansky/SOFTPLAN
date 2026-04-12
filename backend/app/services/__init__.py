@@ -84,6 +84,7 @@ from .llm_config_service import (
 )
 from .llm_service import (
     LlmChatResult,
+    LlmConfigModelsResult,
     LlmConfigValidationDepth,
     LlmConfigValidationResult,
     LlmImageUrlInputPart,
@@ -92,8 +93,10 @@ from .llm_service import (
     LlmTextInputPart,
     LlmUsage,
     get_llm_service_client,
+    list_llm_models_by_config_id,
     load_llm_service_config,
     log_llm_service_config,
+    preview_llm_models,
     validate_llm_config_by_id,
     validate_llm_service_config,
 )
@@ -113,6 +116,7 @@ __all__ = [
     "LlmConfigConflictError",
     "LlmConfigDisabledError",
     "LlmConfigError",
+    "LlmConfigModelsResult",
     "LlmConfigNotFoundError",
     "LlmConfigResolutionError",
     "LlmConfigValidationDepth",
@@ -167,6 +171,7 @@ __all__ = [
     "is_extracted_image_semantic_task_worker_enabled",
     "is_layout_analysis_task_worker_enabled",
     "list_llm_configs",
+    "list_llm_models_by_config_id",
     "load_extracted_image_semantic_prompt",
     "load_llm_service_config",
     "log_llm_service_config",
@@ -191,4 +196,5 @@ __all__ = [
     "validate_llm_config_by_id",
     "validate_llm_config_values",
     "validate_llm_service_config",
+    "preview_llm_models",
 ]

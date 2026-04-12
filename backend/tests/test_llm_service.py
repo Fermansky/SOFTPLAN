@@ -517,6 +517,262 @@ class BackendLlmIntegrationTests(TestCase):
         self.assertEqual(payload["stage"], "auth")
         self.assertEqual(payload["error_code"], "auth_failed")
 
+    def test_models_endpoint_uses_requested_config_and_returns_model_ids(self):
+        self._start_client()
+        custom_config = self._create_config(
+            code="custom-models",
+            name="Custom Models",
+            base_url="https://custom.example.com/v1",
+            api_key="custom-models-key",
+            default_model="gpt-custom-models",
+            enabled=True,
+            is_active=False,
+        )
+
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            return_value=_ResponseStub(
+                {"data": [{"id": "gpt-custom-models"}, {"id": "gpt-custom-vision"}]},
+                method="GET",
+                url="https://custom.example.com/v1/models",
+            ),
+        ) as mock_get:
+            response = self.client.get(f"/llm/configs/{custom_config.id}/models")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["normalized_base_url"], "https://custom.example.com/v1")
+        self.assertEqual(payload["model_ids"], ["gpt-custom-models", "gpt-custom-vision"])
+        self.assertEqual(mock_get.call_args.args[0], "https://custom.example.com/v1/models")
+        self.assertEqual(mock_get.call_args.kwargs["headers"]["Authorization"], "Bearer custom-models-key")
+
+    def test_models_endpoint_supports_models_payload_and_dedupes_stably(self):
+        self._start_client()
+        active_config = self._load_configs()[0]
+
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            return_value=_ResponseStub(
+                {"models": ["gpt-test", "gpt-test", {"id": "gpt-4.1"}, {"name": "gpt-test"}, {"name": "gpt-4o"}]},
+                method="GET",
+                url="https://example.com/v1/models",
+            ),
+        ):
+            response = self.client.get(f"/llm/configs/{active_config.id}/models")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["model_ids"], ["gpt-test", "gpt-4.1", "gpt-4o"])
+
+    def test_models_endpoint_returns_failed_result_on_auth_error(self):
+        self._start_client()
+        active_config = self._load_configs()[0]
+
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            return_value=_ResponseStub(
+                {"error": "unauthorized"},
+                status_code=401,
+                text="unauthorized",
+                method="GET",
+                url="https://example.com/v1/models",
+            ),
+        ):
+            response = self.client.get(f"/llm/configs/{active_config.id}/models")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["model_ids"], [])
+        self.assertEqual(payload["http_status"], 401)
+        self.assertEqual(payload["error_code"], "auth_failed")
+
+    def test_models_endpoint_returns_failed_result_on_request_error(self):
+        self._start_client()
+        active_config = self._load_configs()[0]
+        request = httpx.Request("GET", "https://example.com/v1/models")
+
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            side_effect=httpx.ConnectError("dns failed", request=request),
+        ):
+            response = self.client.get(f"/llm/configs/{active_config.id}/models")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["model_ids"], [])
+        self.assertEqual(payload["error_code"], "request_error")
+        self.assertIn("Upstream request error", payload["error_message"])
+
+    def test_models_endpoint_returns_failed_result_on_invalid_json(self):
+        self._start_client()
+        active_config = self._load_configs()[0]
+
+        broken_response = _ResponseStub(
+            {"ignored": True},
+            method="GET",
+            url="https://example.com/v1/models",
+        )
+        broken_response.json = lambda: (_ for _ in ()).throw(ValueError("bad json"))
+
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            return_value=broken_response,
+        ):
+            response = self.client.get(f"/llm/configs/{active_config.id}/models")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["model_ids"], [])
+        self.assertEqual(payload["error_code"], "invalid_json")
+
+    def test_models_endpoint_returns_failed_result_when_no_model_identifiers_exist(self):
+        self._start_client()
+        active_config = self._load_configs()[0]
+
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            return_value=_ResponseStub(
+                {"data": [{"owned_by": "tenant"}]},
+                method="GET",
+                url="https://example.com/v1/models",
+            ),
+        ):
+            response = self.client.get(f"/llm/configs/{active_config.id}/models")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["model_ids"], [])
+        self.assertEqual(payload["error_code"], "invalid_models_payload")
+
+    def test_models_endpoint_returns_404_for_missing_config(self):
+        self._start_client()
+
+        response = self.client.get(f"/llm/configs/{uuid4()}/models")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "LLM config not found")
+
+    def test_models_endpoint_returns_409_for_disabled_config(self):
+        self._start_client()
+        disabled_config = self._create_config(code="disabled-models", name="Disabled Models", enabled=False)
+
+        response = self.client.get(f"/llm/configs/{disabled_config.id}/models")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], "LLM config is disabled")
+
+    def test_preview_models_endpoint_returns_model_ids(self):
+        self._start_client()
+
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            return_value=_ResponseStub(
+                {"data": [{"id": "gpt-preview"}, {"id": "gpt-preview-vision"}]},
+                method="GET",
+                url="https://preview.example.com/v1/models",
+            ),
+        ) as mock_get:
+            response = self.client.post(
+                "/llm/models/preview",
+                json={
+                    "provider": "openai_compatible",
+                    "base_url": "https://preview.example.com/v1",
+                    "api_key": "preview-key",
+                    "timeout_seconds": 15,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["normalized_base_url"], "https://preview.example.com/v1")
+        self.assertEqual(payload["model_ids"], ["gpt-preview", "gpt-preview-vision"])
+        self.assertEqual(mock_get.call_args.args[0], "https://preview.example.com/v1/models")
+        self.assertEqual(mock_get.call_args.kwargs["headers"]["Authorization"], "Bearer preview-key")
+
+    def test_preview_models_endpoint_returns_failed_result_on_auth_error(self):
+        self._start_client()
+
+        with patch(
+            "backend.app.services.llm_service.httpx.get",
+            return_value=_ResponseStub(
+                {"error": "unauthorized"},
+                status_code=401,
+                text="unauthorized",
+                method="GET",
+                url="https://preview.example.com/v1/models",
+            ),
+        ):
+            response = self.client.post(
+                "/llm/models/preview",
+                json={
+                    "provider": "openai_compatible",
+                    "base_url": "https://preview.example.com/v1",
+                    "api_key": "preview-key",
+                    "timeout_seconds": 15,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["http_status"], 401)
+        self.assertEqual(payload["error_code"], "auth_failed")
+        self.assertEqual(payload["model_ids"], [])
+
+    def test_preview_models_endpoint_rejects_invalid_base_url(self):
+        self._start_client()
+
+        response = self.client.post(
+            "/llm/models/preview",
+            json={
+                "provider": "openai_compatible",
+                "base_url": "ftp://preview.example.com/v1",
+                "api_key": "preview-key",
+                "timeout_seconds": 15,
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("must use http or https", response.json()["detail"])
+
+    def test_preview_models_endpoint_rejects_missing_api_key(self):
+        self._start_client()
+
+        response = self.client.post(
+            "/llm/models/preview",
+            json={
+                "provider": "openai_compatible",
+                "base_url": "https://preview.example.com/v1",
+                "api_key": "   ",
+                "timeout_seconds": 15,
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("api key is required", response.json()["detail"])
+
+    def test_preview_models_endpoint_rejects_invalid_timeout(self):
+        self._start_client()
+
+        response = self.client.post(
+            "/llm/models/preview",
+            json={
+                "provider": "openai_compatible",
+                "base_url": "https://preview.example.com/v1",
+                "api_key": "preview-key",
+                "timeout_seconds": 0,
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+
     def test_chat_returns_409_for_disabled_requested_config(self):
         self._start_client()
         disabled_config = self._create_config(code="disabled-1", name="Disabled", enabled=False)

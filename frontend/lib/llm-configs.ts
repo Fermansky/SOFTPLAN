@@ -1,4 +1,4 @@
-﻿export type LlmConfigProvider = "openai_compatible"
+export type LlmConfigProvider = "openai_compatible"
 export type LlmValidationDepth = "basic" | "strict"
 
 export type ApiLlmConfig = {
@@ -50,6 +50,23 @@ export type LlmConfigValidationResult = {
   http_status: number | null
   error_code: string | null
   error_message: string | null
+}
+
+export type LlmConfigModelsResult = {
+  success: boolean
+  normalized_base_url: string
+  model_ids: string[]
+  latency_ms: number | null
+  http_status: number | null
+  error_code: string | null
+  error_message: string | null
+}
+
+export type PreviewLlmConfigModelsPayload = {
+  provider: LlmConfigProvider
+  base_url: string
+  api_key: string
+  timeout_seconds: number
 }
 
 export function getLlmApiBaseUrl() {
@@ -160,6 +177,44 @@ export async function validateLlmConfig(
   }
 
   return (await response.json()) as LlmConfigValidationResult
+}
+
+export async function fetchLlmConfigModels(
+  configId: string,
+  signal?: AbortSignal
+): Promise<LlmConfigModelsResult> {
+  const response = await fetch(`${getLlmApiBaseUrl()}/llm/configs/${configId}/models`, {
+    method: "GET",
+    signal,
+    headers: { Accept: "application/json" },
+  })
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, `加载模型列表失败（HTTP ${response.status}）`))
+  }
+
+  return (await response.json()) as LlmConfigModelsResult
+}
+
+export async function previewLlmConfigModels(
+  payload: PreviewLlmConfigModelsPayload,
+  signal?: AbortSignal
+): Promise<LlmConfigModelsResult> {
+  const response = await fetch(`${getLlmApiBaseUrl()}/llm/models/preview`, {
+    method: "POST",
+    signal,
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(payload),
+  })
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, `预探测模型列表失败（HTTP ${response.status}）`))
+  }
+
+  return (await response.json()) as LlmConfigModelsResult
 }
 
 export async function deleteLlmConfig(configId: string): Promise<void> {

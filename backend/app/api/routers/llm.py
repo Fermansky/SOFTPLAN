@@ -21,9 +21,10 @@ from sqlmodel import Session
 
 from ...core.logging import build_log_extra, get_request_id
 from ...database import get_session
-from ...models import LlmConfigCreate, LlmConfigListItem, LlmConfigRead, LlmConfigUpdate
+from ...models import LlmConfigCreate, LlmConfigListItem, LlmConfigProvider, LlmConfigRead, LlmConfigUpdate
 from ...services import (
     LlmChatPersistenceError,
+    LlmConfigModelsResult,
     LlmConfigConflictError,
     LlmConfigDisabledError,
     LlmConfigNotFoundError,
@@ -40,7 +41,9 @@ from ...services import (
     get_active_llm_config,
     get_llm_config_or_raise,
     get_llm_service_client,
+    list_llm_models_by_config_id,
     list_llm_configs,
+    preview_llm_models,
     serialize_llm_config,
     serialize_llm_config_list_item,
     update_llm_config,
@@ -75,6 +78,23 @@ class LlmConfigValidationRead(BaseModel):
     http_status: int | None = None
     error_code: str | None = None
     error_message: str | None = None
+
+
+class LlmConfigModelsRead(BaseModel):
+    success: bool
+    normalized_base_url: str
+    model_ids: list[str]
+    latency_ms: int | None = None
+    http_status: int | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+class LlmConfigModelsPreviewRequest(BaseModel):
+    provider: LlmConfigProvider
+    base_url: str = Field(min_length=1, max_length=2048)
+    api_key: str
+    timeout_seconds: float = Field(gt=0)
 
 
 class LlmChatRequest(BaseModel):
@@ -131,6 +151,18 @@ def _to_validation_read(result: LlmConfigValidationResult) -> LlmConfigValidatio
         stage=result.stage,
         normalized_base_url=result.normalized_base_url,
         model_checked=result.model_checked,
+        latency_ms=result.latency_ms,
+        http_status=result.http_status,
+        error_code=result.error_code,
+        error_message=result.error_message,
+    )
+
+
+def _to_models_read(result: LlmConfigModelsResult) -> LlmConfigModelsRead:
+    return LlmConfigModelsRead(
+        success=result.success,
+        normalized_base_url=result.normalized_base_url,
+        model_ids=result.model_ids,
         latency_ms=result.latency_ms,
         http_status=result.http_status,
         error_code=result.error_code,
@@ -233,6 +265,36 @@ def validate_llm_config_route(
     except Exception as exc:
         _raise_llm_config_http_error(exc)
     return _to_validation_read(result)
+
+
+@router.get("/configs/{config_id}/models", response_model=LlmConfigModelsRead)
+def list_llm_config_models_route(
+    config_id: UUID,
+    session: Session = Depends(get_session),
+) -> LlmConfigModelsRead:
+    try:
+        result = list_llm_models_by_config_id(
+            session,
+            config_id,
+            request_id=get_request_id(),
+        )
+    except Exception as exc:
+        _raise_llm_config_http_error(exc)
+    return _to_models_read(result)
+
+
+@router.post("/models/preview", response_model=LlmConfigModelsRead)
+def preview_llm_models_route(payload: LlmConfigModelsPreviewRequest) -> LlmConfigModelsRead:
+    try:
+        result = preview_llm_models(
+            base_url=payload.base_url,
+            api_key=payload.api_key,
+            timeout_seconds=payload.timeout_seconds,
+            request_id=get_request_id(),
+        )
+    except Exception as exc:
+        _raise_llm_config_http_error(exc)
+    return _to_models_read(result)
 
 
 @router.delete("/configs/{config_id}", status_code=status.HTTP_204_NO_CONTENT)

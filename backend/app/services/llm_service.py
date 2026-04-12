@@ -37,6 +37,7 @@ from .llm_config_service import (
 logger = logging.getLogger(__name__)
 _MAX_LOG_BODY_LENGTH = 500
 _MAX_PROBE_TIMEOUT_SECONDS = 5.0
+_MODEL_LIST_PROBE_DEFAULT_MODEL = "__models_probe__"
 CALLER_SERVICE_NAME = "backend"
 
 
@@ -96,6 +97,17 @@ class LlmConfigValidationResult:
     stage: str
     normalized_base_url: str
     model_checked: bool
+    latency_ms: int | None = None
+    http_status: int | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
+class LlmConfigModelsResult:
+    success: bool
+    normalized_base_url: str
+    model_ids: list[str]
     latency_ms: int | None = None
     http_status: int | None = None
     error_code: str | None = None
@@ -164,6 +176,27 @@ def _build_validation_result(
     )
 
 
+def _build_models_result(
+    *,
+    success: bool,
+    normalized_base_url: str,
+    model_ids: list[str],
+    latency_ms: int | None = None,
+    http_status: int | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> LlmConfigModelsResult:
+    return LlmConfigModelsResult(
+        success=success,
+        normalized_base_url=normalized_base_url,
+        model_ids=model_ids,
+        latency_ms=latency_ms,
+        http_status=http_status,
+        error_code=error_code,
+        error_message=error_message,
+    )
+
+
 def _extract_model_ids(payload: Any) -> list[str]:
     """从 OpenAI-compatible `/models` 响应里提取可比较的模型标识列表。"""
 
@@ -191,6 +224,42 @@ def _extract_model_ids(payload: Any) -> list[str]:
             if isinstance(model_id, str) and model_id:
                 model_ids.append(model_id)
     return model_ids
+
+
+def _dedupe_model_ids(model_ids: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for model_id in model_ids:
+        if model_id in seen:
+            continue
+        seen.add(model_id)
+        deduped.append(model_id)
+    return deduped
+
+
+def _build_models_probe_client(
+    *,
+    config_id: UUID | None,
+    config_code: str | None,
+    base_url: str,
+    api_key: str,
+    timeout_seconds: float,
+) -> "LlmServiceClient":
+    validated = validate_llm_config_values(
+        base_url=base_url,
+        api_key=api_key,
+        default_model=_MODEL_LIST_PROBE_DEFAULT_MODEL,
+        timeout_seconds=timeout_seconds,
+        require_api_key=True,
+    )
+    return LlmServiceClient(
+        config_id=config_id,
+        config_code=config_code,
+        base_url=validated["base_url"],
+        api_key=validated["api_key"],
+        default_model=_MODEL_LIST_PROBE_DEFAULT_MODEL,
+        timeout_seconds=validated["timeout_seconds"],
+    )
 
 
 def _looks_like_model_error(body_text: str) -> bool:
@@ -667,6 +736,36 @@ class LlmServiceClient:
 
         return probe_client._probe_chat_completion(request_id=request_id)
 
+    def list_models(self, *, request_id: str | None = None) -> LlmConfigModelsResult:
+        normalized_base_url = self.base_url.strip().rstrip("/")
+        try:
+            probe_client = _build_models_probe_client(
+                config_id=self.config_id,
+                config_code=self.config_code,
+                base_url=self.base_url,
+                api_key=self.api_key,
+                timeout_seconds=self.timeout_seconds,
+            )
+        except LlmConfigValidationError as exc:
+            return _build_models_result(
+                success=False,
+                normalized_base_url=normalized_base_url,
+                model_ids=[],
+                error_code="invalid_config",
+                error_message=str(exc),
+            )
+
+        models_result, model_ids, _ = probe_client._probe_models(request_id=request_id)
+        return _build_models_result(
+            success=models_result.valid,
+            normalized_base_url=probe_client.base_url,
+            model_ids=_dedupe_model_ids(model_ids or []),
+            latency_ms=models_result.latency_ms,
+            http_status=models_result.http_status,
+            error_code=models_result.error_code,
+            error_message=models_result.error_message,
+        )
+
     def _execute_upstream_chat(
         self,
         *,
@@ -968,6 +1067,33 @@ def validate_llm_config_by_id(
         depth=depth,
         request_id=request_id,
     )
+
+
+def list_llm_models_by_config_id(
+    session: Session,
+    config_id: UUID,
+    *,
+    request_id: str | None = None,
+) -> LlmConfigModelsResult:
+    client = get_llm_service_client(config_id=config_id, session=session)
+    return client.list_models(request_id=request_id)
+
+
+def preview_llm_models(
+    *,
+    base_url: str,
+    api_key: str,
+    timeout_seconds: float,
+    request_id: str | None = None,
+) -> LlmConfigModelsResult:
+    probe_client = _build_models_probe_client(
+        config_id=None,
+        config_code=None,
+        base_url=base_url,
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+    )
+    return probe_client.list_models(request_id=request_id)
 
 
 def get_llm_service_client(*, config_id: UUID | None = None, session: Session | None = None) -> LlmServiceClient:
