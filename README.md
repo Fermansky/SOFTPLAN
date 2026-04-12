@@ -18,6 +18,8 @@ docker compose up --build
 
 `docker compose` no longer starts `file-convert-service` by default. If you want document parsing to work, run that service separately and set `FILE_CONVERT_SERVICE_BASE_URL` in `.env`.
 
+The repository now only guarantees first-time initialization on a fresh database. Startup no longer includes in-app schema migration logic for older database layouts.
+
 ## Services
 
 - Frontend: http://localhost:3000
@@ -39,6 +41,7 @@ Optional external service:
 ## Notes
 
 - `backend` 现在是唯一的 LLM 宿主，负责上游模型调用和 `llm_chat_records` 审计落库。
+- 数据库初始化仅覆盖当前 schema 的首次建表；若要恢复旧快照，请按当前 schema 重建或手工处理升级。
 - 未配置 `FILE_CONVERT_SERVICE_BASE_URL` 时，API 仍可正常启动，但 `/document-parsing/*` 相关能力会在执行阶段失败，`/document-parsing/availability` 会返回不可用。
 - `GET /llm/availability` 检查的是 `backend` 内嵌 LLM 模块的本地配置。
 - 如果 `POST /llm/chat` 返回 502，优先检查 `api` 容器日志；如果返回 500，说明上游成功但审计持久化失败。
