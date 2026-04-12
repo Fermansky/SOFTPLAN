@@ -49,3 +49,18 @@ class LoggingConfigTests(TestCase):
         self.assertEqual(root_logger.level, logging.INFO)
         self.assertEqual(root_logger.handlers[0].formatter.__class__.__name__, "ConsoleFormatter")
         self.assertTrue(uvicorn_access_logger.handlers)
+
+    def test_build_log_extra_skips_none_fields(self):
+        extra = logging_module.build_log_extra(
+            "logging.configured",
+            environment="development",
+            request_id=None,
+        )
+
+        self.assertEqual(
+            extra,
+            {
+                "event": "logging.configured",
+                "environment": "development",
+            },
+        )

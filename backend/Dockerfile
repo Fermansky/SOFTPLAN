@@ -7,11 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 COPY backend/requirements.txt ./requirements.txt
-COPY pyproject.toml ./pyproject.toml
-COPY common ./common
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.txt && \
-    pip install .
+    pip install -r requirements.txt
 
 COPY backend/app ./app
 

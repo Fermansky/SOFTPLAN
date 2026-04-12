@@ -33,9 +33,8 @@ Optional external service:
 ## Logging
 
 - Python 服务统一日志规范见 [docs/python-services-logging-guide.md](docs/python-services-logging-guide.md)
-- 共享日志基础设施位于 `common/softplan_common/`，本地独立运行 Python 服务前可先在对应虚拟环境执行 `pip install -e .`
-- 可通过 `APP_ENV`、`APP_LOG_LEVEL`、`APP_LOG_FORMAT`、`APP_LOG_ACCESS_ENABLED` 控制三套 Python 服务的日志行为
-- 统一请求链路头为 `X-Request-ID`；`file-convert-service` 兼容一轮旧头 `X-Convert-Task-Id`
+- `backend` 在仓库内自管日志实现，可通过 `APP_ENV`、`APP_LOG_LEVEL`、`APP_LOG_FORMAT`、`APP_LOG_ACCESS_ENABLED` 控制日志行为
+- 统一请求链路头为 `X-Request-ID`；对外部 `file-convert-service` 的兼容旧头 `X-Convert-Task-Id` 仅保留在 `backend` 的 HTTP 客户端透传逻辑中
 
 ## Notes
 
