@@ -489,9 +489,25 @@ export default function ModelSettingsPage() {
       setDetailLoading(true)
       setDetailError(null)
       const data = await fetchLlmConfig(configId, signal)
+      const nextForm = createFormFromConfig(data)
       setDetail(data)
-      setForm(createFormFromConfig(data))
+      setForm(nextForm)
       setFormError("")
+      const nextProbeRequest = resolveModelProbeRequest({
+        isCreateMode: false,
+        detail: data,
+        form: nextForm,
+      })
+      if (nextProbeRequest.kind !== "unavailable") {
+        setModelOptions([])
+        setModelsResult(null)
+        setModelInputMode("manual")
+        void runModelProbe(nextProbeRequest, {
+          force: true,
+          signal,
+          defaultModelValue: nextForm.defaultModel.trim(),
+        })
+      }
     } catch (error) {
       if ((error as Error).name === "AbortError") {
         return
@@ -609,13 +625,13 @@ export default function ModelSettingsPage() {
 
   async function runModelProbe(
     request: Exclude<ModelProbeRequest, { kind: "unavailable" }>,
-    options?: { force?: boolean; signal?: AbortSignal }
+    options?: { force?: boolean; signal?: AbortSignal; defaultModelValue?: string }
   ) {
     if (!options?.force && lastProbeSignature === request.signature) {
       return
     }
 
-    const defaultModelValue = form.defaultModel.trim()
+    const defaultModelValue = options?.defaultModelValue ?? form.defaultModel.trim()
     setLastProbeSignature(request.signature)
     setModelsLoading(true)
 
