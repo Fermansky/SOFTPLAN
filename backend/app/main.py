@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api import api_router
 from .agents.document_structuring import DocumentStructuringPromptError, load_document_structuring_prompt
+from .agents.text_summary import TextSummaryPromptError, load_text_summary_prompt
 from .core.logging import build_log_extra, configure_logging, install_request_id_middleware
 from .database import create_db_and_tables
 from .services import (
@@ -30,6 +31,16 @@ def _log_document_structuring_prompt_status() -> None:
             extra=build_log_extra("document_structuring.prompt.unavailable", error=str(exc)),
         )
 
+
+def _log_text_summary_prompt_status() -> None:
+    logger = logging.getLogger("app")
+    try:
+        load_text_summary_prompt()
+    except TextSummaryPromptError as exc:
+        logger.warning(
+            "Text summary prompt is unavailable",
+            extra=build_log_extra("text_summary.prompt.unavailable", error=str(exc)),
+        )
 
 
 def _log_extracted_image_semantic_prompt_status() -> None:
@@ -61,6 +72,7 @@ def create_app() -> FastAPI:
     app.add_event_handler("startup", create_db_and_tables)
     app.add_event_handler("startup", bootstrap_llm_configs_from_env)
     app.add_event_handler("startup", _log_document_structuring_prompt_status)
+    app.add_event_handler("startup", _log_text_summary_prompt_status)
     app.add_event_handler("startup", _log_extracted_image_semantic_prompt_status)
     app.add_event_handler("startup", log_llm_service_config)
 

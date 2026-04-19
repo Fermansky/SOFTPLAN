@@ -13,6 +13,11 @@ from ...agents.document_structuring import (
     DocumentStructuringPromptError,
     run_document_structuring_agent,
 )
+from ...agents.text_summary import (
+    TextSummaryAgentError,
+    TextSummaryPromptError,
+    run_text_summary_agent,
+)
 from ...database import get_session
 from ...services import (
     LlmChatPersistenceError,
@@ -43,6 +48,27 @@ class DocumentStructuringDebugRunRequest(BaseModel):
 
 class DocumentStructuringDebugRunRead(BaseModel):
     output_markdown: str
+    model: str
+    request_id: str | None = None
+    usage: AgentLlmUsageRead
+    effective_config_id: UUID | None = None
+    effective_config_code: str | None = None
+    prompt_path: str
+    prompt_hash: str | None = None
+
+
+class TextSummaryDebugRunRequest(BaseModel):
+    source_text: str = Field(min_length=1, max_length=200000)
+    config_id: UUID | None = None
+    model: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = Field(default=None, gt=0)
+    request_id: str | None = None
+
+
+class TextSummaryDebugRunRead(BaseModel):
+    title: str
+    summary: str
     model: str
     request_id: str | None = None
     usage: AgentLlmUsageRead
@@ -93,6 +119,49 @@ def debug_run_document_structuring_agent(
 
     return DocumentStructuringDebugRunRead(
         output_markdown=result.output_markdown,
+        model=result.model,
+        request_id=result.request_id,
+        usage=AgentLlmUsageRead(
+            prompt_tokens=result.usage.prompt_tokens,
+            completion_tokens=result.usage.completion_tokens,
+            total_tokens=result.usage.total_tokens,
+        ),
+        effective_config_id=result.effective_config_id,
+        effective_config_code=result.effective_config_code,
+        prompt_path=result.prompt_path,
+        prompt_hash=result.prompt_hash,
+    )
+
+
+@router.post("/text-summary/debug-run", response_model=TextSummaryDebugRunRead)
+def debug_run_text_summary_agent(
+    payload: TextSummaryDebugRunRequest,
+    session: Session = Depends(get_session),
+) -> TextSummaryDebugRunRead:
+    try:
+        result = run_text_summary_agent(
+            source_text=payload.source_text,
+            session=session,
+            config_id=payload.config_id,
+            model=payload.model,
+            temperature=payload.temperature,
+            max_tokens=payload.max_tokens,
+            request_id=payload.request_id,
+        )
+    except Exception as exc:
+        _raise_llm_config_http_error(exc)
+        if isinstance(exc, (TextSummaryPromptError, LlmChatPersistenceError)):
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+        if isinstance(exc, TextSummaryAgentError):
+            detail = str(exc)
+            if "source_text" in detail:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail) from exc
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail) from exc
+        raise
+
+    return TextSummaryDebugRunRead(
+        title=result.title,
+        summary=result.summary,
         model=result.model,
         request_id=result.request_id,
         usage=AgentLlmUsageRead(
