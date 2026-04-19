@@ -82,6 +82,7 @@ from .llm_config_service import (
     update_llm_config,
     validate_llm_config_values,
 )
+from .llm_json_parser import JsonValue, LlmJsonParseError, parse, parse_array, parse_object
 from .llm_service import (
     LlmChatResult,
     LlmConfigModelsResult,
@@ -110,6 +111,7 @@ __all__ = [
     "ExtractedImageSemanticTaskSubmissionResult",
     "FileConvertServiceClient",
     "InlineImageData",
+    "JsonValue",
     "LayoutAnalysisTaskSubmissionResult",
     "LlmChatPersistenceError",
     "LlmChatResult",
@@ -122,6 +124,7 @@ __all__ = [
     "LlmConfigValidationDepth",
     "LlmConfigValidationError",
     "LlmConfigValidationResult",
+    "LlmJsonParseError",
     "LlmImageUrlInputPart",
     "LlmInputPart",
     "LlmServiceClient",
@@ -180,6 +183,9 @@ __all__ = [
     "process_document_parsing_tasks_for_semantic_task",
     "process_one_pending_extracted_image_semantic_task",
     "process_one_pending_layout_analysis_task",
+    "parse",
+    "parse_array",
+    "parse_object",
     "recover_orphaned_extracted_image_semantic_tasks",
     "recover_orphaned_layout_analysis_tasks",
     "resolve_document_parsing_image_model_selection",
