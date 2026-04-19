@@ -8,6 +8,7 @@
 - 该模块仅做导出聚合，不扩展任何接口语义。
 """
 
+from .agents import router as agents_router
 from .document_parsing import router as document_parsing_router
 from .documents import router as documents_router
 from .extracted_images import router as extracted_images_router
@@ -19,6 +20,7 @@ from .projects import router as projects_router
 from .softwares import router as softwares_router
 
 __all__ = [
+    "agents_router",
     "document_parsing_router",
     "documents_router",
     "extracted_images_router",

@@ -11,6 +11,7 @@
 from fastapi import APIRouter
 
 from .routers import (
+    agents_router,
     document_parsing_router,
     documents_router,
     extracted_images_router,
@@ -23,6 +24,7 @@ from .routers import (
 )
 
 api_router = APIRouter()
+api_router.include_router(agents_router)
 api_router.include_router(health_router)
 api_router.include_router(projects_router)
 api_router.include_router(softwares_router)
