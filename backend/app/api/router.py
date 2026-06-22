@@ -16,6 +16,7 @@ from .routers import (
     documents_router,
     extracted_images_router,
     health_router,
+    ifpug_router,
     layout_analysis_router,
     llm_router,
     project_software_relations_router,
@@ -25,6 +26,7 @@ from .routers import (
 
 api_router = APIRouter()
 api_router.include_router(agents_router)
+api_router.include_router(ifpug_router)
 api_router.include_router(health_router)
 api_router.include_router(projects_router)
 api_router.include_router(softwares_router)

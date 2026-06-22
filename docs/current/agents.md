@@ -88,3 +88,52 @@ Agent 与 Service 的区别：Agent 直接调用 LLM 完成一个具体的智能
 - 业务步骤（如 IFPUG 各 step）后续按"读 ctx → 调 `run_xxx_agent` → 写 ctx + 返回 StepRecord"的薄包装方式实现，独立子目录维护
 
 **测试**：`backend/tests/test_agent_pipeline.py` 覆盖顺序执行、usage 累加、`PipelineAbort` 短路、未预期异常包装、Context 校验等场景。
+
+---
+
+## IFPUG 流水线（逻辑文件识别）
+
+**目录**：`backend/app/agents/ifpug/`
+
+封装 IFPUG 功能点分析中"逻辑文件识别"任务的多步流水线，与通用 `pipeline/` 框架配合使用。当前阶段（PR2）仅落地 **子任务 1.1**（候选数据实体识别），后续 PR 将增量补齐 1.2 ~ 1.7。
+
+### 模块划分
+
+- `domain.py`：领域 dataclass —— `DataEntity` / `Attribute` / `SourceRef` / `EntityRelation` / `LogicalFile` / `Exclusion`，以及统一的排除标签常量。
+- `context.py`：`IfpugContext`，组合 `BasePipelineContext`；提供 `next_entity_id()` / `next_logical_file_id()` 稳定 id 分配器和 `active_entities()` / `active_logical_files()` 漏斗视图。
+- `steps/s1_1_identify_entities.py`：子任务 1.1 的 agent 函数 + Step 包装。
+- `pipeline.py`：`build_logical_file_pipeline(until=...)` 按已注册步骤顺序组装 `AgentPipeline`，支持按短名截断（调试用）。
+
+### 设计要点
+
+1. **不删除原则**：所有过滤类步骤（1.2 / 1.4 / 1.5 / 1.6）只往 `DataEntity.exclusions` 或 `LogicalFile.exclusions` 追加 `Exclusion(tag, rationale, step)`，原始候选始终保留。"未被任何标签命中"的对象由 `ctx.active_entities()` / `ctx.active_logical_files()` 给出。
+2. **稳定 id**：LLM 仅输出实体的语义字段，**id 由代码侧分配**（`E001` / `LF001` 序列）；后续步骤一律通过 id 引用对象，避免 LLM "改名漂移"。
+3. **rationale 是一等公民**：所有判定决策都必须写入 `rationale` / `classification_rationale`，下游 UI 才能解释"为什么被排除 / 被分类为 ILF"。
+4. **JSON 严格校验**：每个步骤都对 LLM 返回值做逐字段类型与长度校验，任何字段缺失/类型错误都抛出该步骤自身的 `XxxAgentError`，由 runner 包装为 `PipelineStepError(step_name=...)`。
+
+### 子任务 1.1（IdentifyEntities）
+
+**触发时机**：由 `/agents/ifpug/logical-file/debug-run` 端点调用（`until="s1_1"` 仅跑此步）。
+
+**输入**（来自 `IfpugContext`）：
+- `source_document`：已结构化文档（建议使用 `DocumentStructuringAgent` 的输出）
+- `counting_scope`：用户描述的计数范围
+- `user_requirements`：用户需求描述
+
+**输出**（写回 `IfpugContext.candidate_entities`）：
+- 每个 `DataEntity` 包含稳定 id、`name` / `description` / `attributes` / `source_refs`
+
+**Prompt 策略**：
+- System Prompt：`backend/app/prompts/ifpug_s1_1_identify_entities.txt`，可通过环境变量 `IFPUG_S1_1_IDENTIFY_ENTITIES_PROMPT_PATH` 覆盖；进程内 `lru_cache`。
+- User Prompt：用三段 `<<<COUNTING_SCOPE>>>` / `<<<USER_REQUIREMENTS>>>` / `<<<SOURCE_DOCUMENT>>>` 标签包裹三段输入，避免拼接歧义。
+- 强制 JSON 输出，仅允许顶层字段 `entities`；要求 LLM **不要输出 id**（id 由代码分配）。
+
+**StepRecord.metrics**：`entities_in` / `entities_out` / `entities_excluded`，便于在 debug 端点画"漏斗"。
+
+### 调试端点
+
+`POST /agents/ifpug/logical-file/debug-run`：
+- 入参支持 `until` 参数，按短名（`"s1_1"`）截断流水线，便于逐步调优
+- 返回完整的 ctx 快照：候选实体（含 exclusions）、活跃实体 id 列表、所有 `step_records`（含 model/prompt_hash/usage/metrics）、累计 usage 和 abort 信息
+
+**测试**：`backend/tests/test_ifpug_s1_1_agent.py`（17 个用例）覆盖领域结构、Context id 分配、Prompt 加载、Agent 字段校验、Step 写回 ctx、Pipeline 装配。

@@ -122,8 +122,17 @@ POST   /llm/chat                    # 直接发送 LLM 聊天请求（用于前�
 当前为调试用，不是生产流程入口。
 
 ```
-POST   /agents/document-structuring/debug-run  # 直接运行文档结构化 Agent
-POST   /agents/text-summary/debug-run          # 直接运行文本摘要 Agent
+POST   /agents/document-structuring/debug-run    # 直接运行文档结构化 Agent
+POST   /agents/text-summary/debug-run            # 直接运行文本摘要 Agent
+POST   /agents/ifpug/logical-file/debug-run      # 运行 IFPUG 逻辑文件识别流水线
 ```
 
-两个接口均接受 `source_text`、可选 `config_id`、`model`、`temperature`、`max_tokens`。
+`/agents/document-structuring/debug-run` 与 `/agents/text-summary/debug-run` 均接受 `source_text`、可选 `config_id`、`model`、`temperature`、`max_tokens`。
+
+`/agents/ifpug/logical-file/debug-run` 入参：
+- `source_document`：已结构化文档文本（必填，最大 200,000 字符）
+- `counting_scope` / `user_requirements`：计数范围与用户需求描述（最大 8000 字符，可空）
+- `config_id` / `model` / `temperature` / `max_tokens` / `request_id`：与其他 Agent 一致
+- `until`：可选，按短名截断流水线（当前仅支持 `"s1_1"`）
+
+返回：完整 ctx 快照，含 `candidate_entities`（含 `id` / `attributes` / `source_refs` / `exclusions`）、`active_entity_ids`、`step_records`（每步的 `model` / `prompt_hash` / `usage` / `metrics`）、`total_usage`、`aborted` / `abort_reason` / `aborted_step` 与 `registered_steps`。
