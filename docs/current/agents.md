@@ -66,3 +66,25 @@ Agent 与 Service 的区别：Agent 直接调用 LLM 完成一个具体的智能
 3. **LLM 审计**：所有 LLM 调用经过 `LlmService`，自动写入 `llm_chat_records`
 4. **无副作用持久化**：当前两个 Agent 均不写业务数据库表，只返回结果；业务写入由上层编排
 5. **Prompt 哈希追踪**：每次调用记录 `prompt_path` 和 `prompt_hash`，便于排查 Prompt 变更对结果的影响
+
+---
+
+## Pipeline 框架（通用编排层）
+
+**目录**：`backend/app/agents/pipeline/`
+
+通用的、与具体业务无关的 Agent 编排框架。用于把多个 Agent 串成顺序执行的流水线，并通过一个共享的可变 Context 在步骤间传递数据。
+
+**核心组成**：
+- `BasePipelineContext`：跨切关注点容器（`run_id` / `request_id` / `step_records` / `total_usage` / `aborted`）。业务 Context 通过组合（`base: BasePipelineContext` 字段）而非继承来复用，保持业务对象扁平、易序列化。
+- `StepRecord`：每一步执行的结构化痕迹，含状态、耗时、`model` / `prompt_hash` / `usage` / `metrics` 等字段，JSON 友好。
+- `PipelineStep`：基于 `Protocol` 的鸭子类型契约（具备 `name` 属性与 `run(ctx) -> StepRecord` 方法），不强制继承。
+- `AgentPipeline.run(ctx)`：顺序执行 step，自动计时、累加 `total_usage`、记录 `StepRecord`、短路 abort。
+- `PipelineAbort`：步骤主动中止流水线（不视为失败）。
+- `PipelineStepError`：步骤抛出未预期异常时由 runner 包装并向上抛，携带 `step_name`，便于路由层映射 HTTP。
+
+**当前范围（PR1）**：
+- 仅提供框架本身，不绑定任何业务 Agent；不支持重试、并行、DAG（YAGNI，等业务驱动后再扩）
+- 业务步骤（如 IFPUG 各 step）后续按"读 ctx → 调 `run_xxx_agent` → 写 ctx + 返回 StepRecord"的薄包装方式实现，独立子目录维护
+
+**测试**：`backend/tests/test_agent_pipeline.py` 覆盖顺序执行、usage 累加、`PipelineAbort` 短路、未预期异常包装、Context 校验等场景。
