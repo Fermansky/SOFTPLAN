@@ -111,7 +111,10 @@ Agent 与 Service 的区别：Agent 直接调用 LLM 完成一个具体的智能
 - `steps/s1_1_identify_entities.py`：子任务 1.1 的 agent 函数 + Step 包装。
 - `steps/s1_2_filter_unmaintained.py`：子任务 1.2，过滤"本应用不维护"的候选实体。
 - `steps/s1_3_merge_duplicates.py`：子任务 1.3，合并语义重复的候选实体（代码侧并查集传递闭包）。
-- `pipeline.py`：`build_logical_file_pipeline(until=...)` 按已注册步骤顺序组装 `AgentPipeline`，支持按短名截断（调试用）。当前已注册：`s1_1` → `s1_2` → `s1_3`。
+- `steps/s1_4_filter_code_data.py`：子任务 1.4，过滤"代码 / 参考数据"（字典、枚举、常量表）。
+- `steps/s1_5_filter_not_user_required.py`：子任务 1.5，过滤"非用户业务需求驱动"的实体（系统日志、技术快照等）。
+- `steps/s1_6_filter_associative.py`：子任务 1.6，过滤"关联实体"（典型连接表，只承载外键的关系实体）。
+- `pipeline.py`：`build_logical_file_pipeline(until=...)` 按已注册步骤顺序组装 `AgentPipeline`，支持按短名截断（调试用）。当前已注册：`s1_1` → `s1_2` → `s1_3` → `s1_4` → `s1_5` → `s1_6`。
 
 ### 设计要点
 
@@ -179,13 +182,40 @@ Agent 与 Service 的区别：Agent 直接调用 LLM 完成一个具体的智能
 
 **StepRecord.metrics**：`entities_in` / `groups_proposed` / `groups_applied` / `entities_merged` / `entities_out` / `canonical_ids`；异常时附 `warnings.{unknown_ids, inactive_ids}`。
 
+### 子任务 1.4 / 1.5 / 1.6（标签型过滤族）
+
+三个步骤的**代码骨架与 s1_2 完全一致**，区别仅在 prompt 判断口径与写入的 `Exclusion.tag`：
+
+| Step | 短名 | 标签 (`Exclusion.tag`) | 判断口径要点 |
+|------|------|------------------------|----------------|
+| `FilterCodeDataStep` | s1_4 | `EXCLUDED_BY_CODE_DATA` | 字典 / 枚举 / 常量表（省份、状态码、币种等），不参与业务过程更新 |
+| `FilterNotUserRequiredStep` | s1_5 | `EXCLUDED_BY_NOT_USER_REQUIRED` | 非用户业务需求驱动（系统日志、内部缓存、会话等），除非用户合规需求显式要求保留 |
+| `FilterAssociativeStep` | s1_6 | `EXCLUDED_BY_ASSOCIATIVE` | 仅承载实体间关联关系的实体（连接表），属性主要是外键、无独立业务概念 |
+
+**共享行为**（与 s1_2 完全相同）：
+- 打包一次 LLM 调用，把全部活跃候选作为 JSON 数组送入；要求 LLM 仅输出"应被排除"的 id 列表。
+- 严格 JSON 校验（id / rationale 类型与长度），不合规字段抛对应的 `XxxAgentError`。
+- 不删除元素，只追加 `Exclusion(tag, rationale, step)`。
+- 未知 id / 同次重复 id / 已被前置步骤排除的 id 都写入 `metrics.warnings`，**不阻断**步骤。
+- 活跃集为空时返回 `SKIPPED`，不调 LLM。
+- StepRecord.metrics 字段与 s1_2 一致：`entities_in` / `entities_excluded` / `entities_out`，异常时附 `warnings.{unknown_ids, duplicate_ids, already_excluded_ids}`。
+
+**Prompt 文件与 env 覆盖变量**：
+- s1_4：`ifpug_s1_4_filter_code_data.txt` / `IFPUG_S1_4_FILTER_CODE_DATA_PROMPT_PATH`
+- s1_5：`ifpug_s1_5_filter_not_user_required.txt` / `IFPUG_S1_5_FILTER_NOT_USER_REQUIRED_PROMPT_PATH`
+- s1_6：`ifpug_s1_6_filter_associative.txt` / `IFPUG_S1_6_FILTER_ASSOCIATIVE_PROMPT_PATH`
+
+> **设计说明**：四个分类型 step（s1_2 / s1_4 / s1_5 / s1_6）目前是结构同形的副本。未抽出基类的原因详见 PR3 讨论的"延迟抽象"原则——等到第二种形态（如多次采样投票）出现时再做"提取基类"的机械重构，比现在猜接口形状更安全。`metrics` 字段命名（`entities_in/out/excluded`, `warnings.*`）已统一，便于未来抽象时直接复用。
+
 ### 调试端点
 
 `POST /agents/ifpug/logical-file/debug-run`：
-- 入参支持 `until` 参数，按短名（`"s1_1"` / `"s1_2"` / `"s1_3"`）截断流水线，便于逐步调优
+- 入参支持 `until` 参数，按短名（`"s1_1"` ~ `"s1_6"`）截断流水线，便于逐步调优
 - 返回完整的 ctx 快照：候选实体（含 exclusions）、活跃实体 id 列表、`relations`（s1_3 写入的 `duplicate_of` 关系）、所有 `step_records`（含 model/prompt_hash/usage/metrics）、累计 usage 和 abort 信息
 
 **测试**：
-- `backend/tests/test_ifpug_s1_1_agent.py`：领域结构、Context id 分配、s1_1 Prompt 加载、字段校验、Step 写回 ctx、Pipeline 装配。
-- `backend/tests/test_ifpug_s1_2_agent.py`：s1_2 Prompt 加载、JSON 严格校验、写回 Exclusion 不删除元素、unknown / duplicate / already_excluded id 的 warnings、空活跃集短路、`until="s1_2"` 截断装配。
-- `backend/tests/test_ifpug_s1_3_agent.py`：s1_3 并查集合并、传递闭包（`{E1,E2}` + `{E2,E3}` → `{E1,E2,E3}`）、canonical = 最小 id、属性 / source_refs 去重并集、`EntityRelation(duplicate_of)` 写入、活跃实体 < 2 短路。
+- `test_ifpug_s1_1_agent.py`：领域结构、Context id 分配、s1_1 Prompt 加载、字段校验、Step 写回 ctx、Pipeline 装配。
+- `test_ifpug_s1_2_agent.py`：s1_2 完整路径（Prompt 加载、JSON 严格校验、不删除写回、unknown / duplicate / already_excluded id warnings、空活跃集短路、截断装配）—— **作为标签型 step 的范式测试**。
+- `test_ifpug_s1_3_agent.py`：s1_3 并查集合并、传递闭包（`{E1,E2}` + `{E2,E3}` → `{E1,E2,E3}`）、canonical = 最小 id、属性 / source_refs 去重并集、`EntityRelation(duplicate_of)` 写入、活跃实体 < 2 短路。
+- `test_ifpug_s1_4_agent.py` / `test_ifpug_s1_5_agent.py` / `test_ifpug_s1_6_agent.py`：与 s1_2 形态相同，仅做核心 5 用例回归（标签 / step name 正确、SKIPPED 短路、warnings 路径），详细路径已在 s1_2 覆盖。
+- `test_ifpug_pipeline_assembly.py`：全部 6 step 的注册顺序、`until=` 截断在每个短名上的等价性、类型匹配。

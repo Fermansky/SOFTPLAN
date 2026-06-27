@@ -15,6 +15,12 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session
 
 from ...agents.ifpug import (
+    FilterAssociativeAgentError,
+    FilterAssociativePromptError,
+    FilterCodeDataAgentError,
+    FilterCodeDataPromptError,
+    FilterNotUserRequiredAgentError,
+    FilterNotUserRequiredPromptError,
     FilterUnmaintainedAgentError,
     FilterUnmaintainedPromptError,
     IdentifyEntitiesAgentError,
@@ -55,7 +61,7 @@ class IfpugDebugRunRequest(BaseModel):
     request_id: str | None = None
     until: str | None = Field(
         default=None,
-        description="按子任务短名截断流水线执行（如 's1_1' / 's1_2' / 's1_3'）。None 表示跑全部。",
+        description="按子任务短名截断流水线执行（'s1_1' ~ 's1_6'）。None 表示跑全部。",
     )
 
 
@@ -282,6 +288,9 @@ def debug_run_logical_file_pipeline(
             IdentifyEntitiesPromptError,
             FilterUnmaintainedPromptError,
             MergeDuplicatesPromptError,
+            FilterCodeDataPromptError,
+            FilterNotUserRequiredPromptError,
+            FilterAssociativePromptError,
         )
         if isinstance(original, prompt_errors) or isinstance(original, LlmChatPersistenceError):
             raise HTTPException(
@@ -292,6 +301,9 @@ def debug_run_logical_file_pipeline(
             IdentifyEntitiesAgentError,
             FilterUnmaintainedAgentError,
             MergeDuplicatesAgentError,
+            FilterCodeDataAgentError,
+            FilterNotUserRequiredAgentError,
+            FilterAssociativeAgentError,
         )
         if isinstance(original, step_agent_errors):
             raise _map_step_agent_error(str(original)) from exc

@@ -14,17 +14,23 @@ from __future__ import annotations
 
 from ..pipeline import AgentPipeline, PipelineStep
 from .steps import (
+    FilterAssociativeStep,
+    FilterCodeDataStep,
+    FilterNotUserRequiredStep,
     FilterUnmaintainedStep,
     IdentifyEntitiesStep,
     MergeDuplicatesStep,
 )
 
 # 已实现的子任务按执行顺序登记。后续 PR 增加新步骤时，按子任务编号
-# 顺序追加到此列表（``s1_4`` ...），不需要改下游调用。
+# 顺序追加到此列表（``s1_7`` ...），不需要改下游调用。
 _REGISTERED_STEPS: list[tuple[str, type[PipelineStep]]] = [
     ("s1_1", IdentifyEntitiesStep),
     ("s1_2", FilterUnmaintainedStep),
     ("s1_3", MergeDuplicatesStep),
+    ("s1_4", FilterCodeDataStep),
+    ("s1_5", FilterNotUserRequiredStep),
+    ("s1_6", FilterAssociativeStep),
 ]
 
 
