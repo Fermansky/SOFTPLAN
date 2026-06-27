@@ -21,7 +21,8 @@ from typing import Any
 
 
 # 已知的排除标签集合。具体步骤可继续扩充，但建议统一在此约定语义。
-EXCLUDED_BY_UNMAINTAINED = "excluded_by_unmaintained"          # 1.2 子任务
+EXCLUDED_BY_UNMAINTAINED = "excluded_by_unmaintained"          # 1.2 子任务：本应用不维护的数据
+EXCLUDED_BY_DUPLICATE = "excluded_by_duplicate"                # 1.3 子任务：与其它候选实体语义重复，已合并
 EXCLUDED_BY_CODE_DATA = "excluded_by_code_data"                # 1.4 子任务
 EXCLUDED_BY_NOT_USER_REQUIRED = "excluded_by_not_user_required"  # 1.5 子任务
 EXCLUDED_BY_ASSOCIATIVE = "excluded_by_associative"            # 1.6 子任务
@@ -89,11 +90,17 @@ class DataEntity:
 
 @dataclass
 class EntityRelation:
-    """实体之间的依赖关系（子任务 1.3 使用）。"""
+    """实体之间的依赖/合并关系。
+
+    `relation_type` 当前约定的语义：
+    - ``duplicate_of``：``from_id`` 因与 ``to_id`` 同义而被合并（1.3 写入）；
+      ``from_id`` 同时会被打 ``EXCLUDED_BY_DUPLICATE`` 标签。
+    - 其它语义（如 ``depends_on`` / ``composed_of``）由后续子任务自行约定。
+    """
 
     from_id: str
     to_id: str
-    relation_type: str  # 'depends_on' | 'composed_of' | 'reference' 等
+    relation_type: str
     rationale: str = ""
 
 

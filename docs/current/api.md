@@ -133,6 +133,6 @@ POST   /agents/ifpug/logical-file/debug-run      # 运行 IFPUG 逻辑文件识�
 - `source_document`：已结构化文档文本（必填，最大 200,000 字符）
 - `counting_scope` / `user_requirements`：计数范围与用户需求描述（最大 8000 字符，可空）
 - `config_id` / `model` / `temperature` / `max_tokens` / `request_id`：与其他 Agent 一致
-- `until`：可选，按短名截断流水线（当前仅支持 `"s1_1"`）
+- `until`：可选，按短名截断流水线。当前可选值：`"s1_1"`（仅识别候选）、`"s1_2"`（含未维护过滤）、`"s1_3"`（含同义合并）。
 
-返回：完整 ctx 快照，含 `candidate_entities`（含 `id` / `attributes` / `source_refs` / `exclusions`）、`active_entity_ids`、`step_records`（每步的 `model` / `prompt_hash` / `usage` / `metrics`）、`total_usage`、`aborted` / `abort_reason` / `aborted_step` 与 `registered_steps`。
+返回：完整 ctx 快照，含 `candidate_entities`（每个含 `id` / `attributes` / `source_refs` / `exclusions`）、`active_entity_ids`、`relations`（如 s1_3 写入的 `duplicate_of` 关系）、`step_records`（每步的 `model` / `prompt_hash` / `usage` / `metrics`，metrics 字段随 step 类型而不同 —— 提取型给 `entities_in/out`，过滤型给 `entities_excluded` 与可选的 `warnings`，合并型给 `groups_proposed/applied`、`entities_merged`、`canonical_ids`）、`total_usage`、`aborted` / `abort_reason` / `aborted_step` 与 `registered_steps`。

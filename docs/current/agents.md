@@ -109,7 +109,9 @@ Agent 与 Service 的区别：Agent 直接调用 LLM 完成一个具体的智能
 - `domain.py`：领域 dataclass —— `DataEntity` / `Attribute` / `SourceRef` / `EntityRelation` / `LogicalFile` / `Exclusion`，以及统一的排除标签常量。
 - `context.py`：`IfpugContext`，组合 `BasePipelineContext`；提供 `next_entity_id()` / `next_logical_file_id()` 稳定 id 分配器和 `active_entities()` / `active_logical_files()` 漏斗视图。
 - `steps/s1_1_identify_entities.py`：子任务 1.1 的 agent 函数 + Step 包装。
-- `pipeline.py`：`build_logical_file_pipeline(until=...)` 按已注册步骤顺序组装 `AgentPipeline`，支持按短名截断（调试用）。
+- `steps/s1_2_filter_unmaintained.py`：子任务 1.2，过滤"本应用不维护"的候选实体。
+- `steps/s1_3_merge_duplicates.py`：子任务 1.3，合并语义重复的候选实体（代码侧并查集传递闭包）。
+- `pipeline.py`：`build_logical_file_pipeline(until=...)` 按已注册步骤顺序组装 `AgentPipeline`，支持按短名截断（调试用）。当前已注册：`s1_1` → `s1_2` → `s1_3`。
 
 ### 设计要点
 
@@ -137,10 +139,53 @@ Agent 与 Service 的区别：Agent 直接调用 LLM 完成一个具体的智能
 
 **StepRecord.metrics**：`entities_in` / `entities_out` / `entities_excluded`，便于在 debug 端点画"漏斗"。
 
+### 子任务 1.2（FilterUnmaintained）
+
+**形态**：**分类型 / 标签型** step。一次性把所有活跃候选实体打包送 LLM，让其在全局视角下判定哪些"本应用不维护"。
+
+**输入**（来自 ctx）：当前活跃实体 `ctx.active_entities()`、`counting_scope`、`user_requirements`。
+
+**输出**：给被判定为未维护的实体追加 `Exclusion(EXCLUDED_BY_UNMAINTAINED, rationale, step)`；**不删除元素**。
+
+**Prompt 策略**：
+- System Prompt：`backend/app/prompts/ifpug_s1_2_filter_unmaintained.txt`，可通过 `IFPUG_S1_2_FILTER_UNMAINTAINED_PROMPT_PATH` 覆盖；走通用 `PromptLoader`。
+- User Prompt：候选实体打成紧凑 JSON 通过 `<<<CANDIDATE_ENTITIES>>>` 标签注入，确保 LLM 引用的是稳定 id。
+- LLM 只输出**应被排除**的实体（`{"excluded": [{"id": "E001", "rationale": "..."}]}`），未列出 = 保留。
+
+**容错策略（关键）**：LLM 返回的"未知 id / 同次重复 id / 已被前置步骤排除的 id"都写入 `StepRecord.metrics.warnings`，但**不阻断步骤** —— 分类型决策容错优先，避免单点错误炸掉整条流水线。
+
+**短路**：活跃实体为空时返回 `SKIPPED` 的 StepRecord，不调 LLM。
+
+**StepRecord.metrics**：`entities_in` / `entities_excluded` / `entities_out`；异常时附 `warnings.{unknown_ids, duplicate_ids, already_excluded_ids}`。
+
+### 子任务 1.3（MergeDuplicates）
+
+**形态**：**合并型** step。LLM 给等价组，代码侧用**并查集传递闭包**做最终合并，canonical 选举与属性归并完全由代码决定（不交给 LLM）。
+
+**输入**：当前活跃实体。**至少 2 个**活跃实体才会调 LLM，否则返回 `SKIPPED`。
+
+**合并语义（必读）**：
+- **canonical 选举**：合并组中 **id 字典序最小** 的实体作为 canonical（实现：并查集 union 时 `min(rootA, rootB)` 作为新 root）。**LLM 输出的 `canonical_name` 仅作为 rationale 提示，不会覆盖 canonical 自身的 name**。
+- **传递闭包**：LLM 给出的多个等价组在 id 维度有重叠时（如 `{E1,E2}` 与 `{E2,E3}`），并查集自动闭合为 `{E1,E2,E3}`。`metrics.groups_applied` 反映闭包后的最终组数，可能少于 `groups_proposed`。
+- **不删除 + 标签**：被合并实体打 `Exclusion(EXCLUDED_BY_DUPLICATE, rationale="merged into <canonical_id> ...", step="ifpug.s1_3_merge_duplicates")`。
+- **关系沉淀**：每个被合并实体写一条 `EntityRelation(from_id=被合并, to_id=canonical, relation_type="duplicate_of", rationale=...)`，记入 `ctx.relations`。
+- **属性 / source_refs 并集**：被合并实体的 `attributes`（按 name 去重）与 `source_refs`（按 `(quote, location)` 去重）追加到 canonical。属性顺序遵循插入顺序，便于审计。
+
+**Prompt 策略**：
+- System Prompt：`backend/app/prompts/ifpug_s1_3_merge_duplicates.txt`，可通过 `IFPUG_S1_3_MERGE_DUPLICATES_PROMPT_PATH` 覆盖。
+- 要求 LLM 输出 `{"groups": [{"members": ["E001", "E003"], "canonical_name": "...", "rationale": "..."}]}`，每组至少 2 个互不相同的 id。
+
+**容错策略**：未知 id 与已被前置步骤排除的 id 都写入 `metrics.warnings`；单组在清洗后剩余 ≤ 1 个有效成员时该组被丢弃（不入并查集）。
+
+**StepRecord.metrics**：`entities_in` / `groups_proposed` / `groups_applied` / `entities_merged` / `entities_out` / `canonical_ids`；异常时附 `warnings.{unknown_ids, inactive_ids}`。
+
 ### 调试端点
 
 `POST /agents/ifpug/logical-file/debug-run`：
-- 入参支持 `until` 参数，按短名（`"s1_1"`）截断流水线，便于逐步调优
-- 返回完整的 ctx 快照：候选实体（含 exclusions）、活跃实体 id 列表、所有 `step_records`（含 model/prompt_hash/usage/metrics）、累计 usage 和 abort 信息
+- 入参支持 `until` 参数，按短名（`"s1_1"` / `"s1_2"` / `"s1_3"`）截断流水线，便于逐步调优
+- 返回完整的 ctx 快照：候选实体（含 exclusions）、活跃实体 id 列表、`relations`（s1_3 写入的 `duplicate_of` 关系）、所有 `step_records`（含 model/prompt_hash/usage/metrics）、累计 usage 和 abort 信息
 
-**测试**：`backend/tests/test_ifpug_s1_1_agent.py`（17 个用例）覆盖领域结构、Context id 分配、Prompt 加载、Agent 字段校验、Step 写回 ctx、Pipeline 装配。
+**测试**：
+- `backend/tests/test_ifpug_s1_1_agent.py`：领域结构、Context id 分配、s1_1 Prompt 加载、字段校验、Step 写回 ctx、Pipeline 装配。
+- `backend/tests/test_ifpug_s1_2_agent.py`：s1_2 Prompt 加载、JSON 严格校验、写回 Exclusion 不删除元素、unknown / duplicate / already_excluded id 的 warnings、空活跃集短路、`until="s1_2"` 截断装配。
+- `backend/tests/test_ifpug_s1_3_agent.py`：s1_3 并查集合并、传递闭包（`{E1,E2}` + `{E2,E3}` → `{E1,E2,E3}`）、canonical = 最小 id、属性 / source_refs 去重并集、`EntityRelation(duplicate_of)` 写入、活跃实体 < 2 短路。

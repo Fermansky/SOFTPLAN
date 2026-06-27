@@ -353,14 +353,18 @@ class LogicalFilePipelineTests(TestCase):
     def tearDown(self) -> None:
         load_identify_entities_prompt.cache_clear()
 
-    def test_registered_steps_currently_only_s1_1(self) -> None:
-        self.assertEqual(list_registered_step_names(), ["s1_1"])
+    def test_s1_1_is_registered_first(self) -> None:
+        # s1_1 必须是第一个注册步骤；其它步骤的存在不属于本测试关心范围。
+        names = list_registered_step_names()
+        self.assertGreaterEqual(len(names), 1)
+        self.assertEqual(names[0], "s1_1")
 
     def test_until_unknown_step_raises(self) -> None:
         with self.assertRaises(ValueError):
             build_logical_file_pipeline(until="s9_9")
 
-    def test_run_pipeline_populates_ctx_and_accumulates_usage(self) -> None:
+    def test_run_pipeline_until_s1_1_populates_ctx_and_accumulates_usage(self) -> None:
+        # 用 until="s1_1" 把流水线截断到只跑 s1_1，避免后续 step 调真实 LLM。
         client = _ClientStub(
             text=(
                 '{"entities":['
@@ -373,7 +377,7 @@ class LogicalFilePipelineTests(TestCase):
         patches = _patch_agent_module(client)
         _enter_all(patches)
         try:
-            build_logical_file_pipeline().run(ctx)
+            build_logical_file_pipeline(until="s1_1").run(ctx)
         finally:
             _exit_all(patches)
 

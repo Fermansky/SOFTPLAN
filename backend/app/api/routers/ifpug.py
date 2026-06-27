@@ -15,9 +15,13 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session
 
 from ...agents.ifpug import (
+    FilterUnmaintainedAgentError,
+    FilterUnmaintainedPromptError,
     IdentifyEntitiesAgentError,
     IdentifyEntitiesPromptError,
     IfpugContext,
+    MergeDuplicatesAgentError,
+    MergeDuplicatesPromptError,
     build_logical_file_pipeline,
     list_registered_step_names,
 )
@@ -51,7 +55,7 @@ class IfpugDebugRunRequest(BaseModel):
     request_id: str | None = None
     until: str | None = Field(
         default=None,
-        description="按子任务短名截断流水线执行（如 's1_1'）。None 表示跑全部。",
+        description="按子任务短名截断流水线执行（如 's1_1' / 's1_2' / 's1_3'）。None 表示跑全部。",
     )
 
 
@@ -104,11 +108,19 @@ class IfpugDataEntityRead(BaseModel):
     exclusions: list[IfpugExclusionRead] = []
 
 
+class IfpugEntityRelationRead(BaseModel):
+    from_id: str
+    to_id: str
+    relation_type: str
+    rationale: str = ""
+
+
 class IfpugDebugRunRead(BaseModel):
     counting_scope: str
     user_requirements: str
     candidate_entities: list[IfpugDataEntityRead]
     active_entity_ids: list[str]
+    relations: list[IfpugEntityRelationRead] = []
     step_records: list[IfpugStepRecordRead]
     total_usage: IfpugLlmUsageRead
     aborted: bool
@@ -135,8 +147,12 @@ def _raise_llm_config_http_error(exc: Exception) -> None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
-def _map_identify_entities_error(detail: str) -> HTTPException:
-    # 入参非法 → 422；其余视为上游 LLM 行为异常 → 502。
+def _map_step_agent_error(detail: str) -> HTTPException:
+    """把 step 内部抛出的 ``XxxAgentError`` 映射到 HTTP 状态码。
+
+    - 入参类问题（用户给的 counting_scope / user_requirements 太长等）→ 422
+    - 其它（LLM 返回结构异常、字段越界、调用失败等）→ 502
+    """
     invalid_input_keywords = (
         "source_document",
         "counting_scope",
@@ -204,6 +220,15 @@ def _serialize_context(ctx: IfpugContext) -> IfpugDebugRunRead:
             for entity in ctx.candidate_entities
         ],
         active_entity_ids=[entity.id for entity in ctx.active_entities()],
+        relations=[
+            IfpugEntityRelationRead(
+                from_id=rel.from_id,
+                to_id=rel.to_id,
+                relation_type=rel.relation_type,
+                rationale=rel.rationale,
+            )
+            for rel in ctx.relations
+        ],
         step_records=[_serialize_step_record(r) for r in ctx.base.step_records],
         total_usage=IfpugLlmUsageRead(
             prompt_tokens=ctx.base.total_usage.prompt_tokens,
@@ -253,13 +278,23 @@ def debug_run_logical_file_pipeline(
         # 解包 runner 抛出的包装异常，根据原始原因映射到 HTTP。
         original = exc.__cause__ if exc.__cause__ is not None else exc
         _raise_llm_config_http_error(original)
-        if isinstance(original, (IdentifyEntitiesPromptError, LlmChatPersistenceError)):
+        prompt_errors = (
+            IdentifyEntitiesPromptError,
+            FilterUnmaintainedPromptError,
+            MergeDuplicatesPromptError,
+        )
+        if isinstance(original, prompt_errors) or isinstance(original, LlmChatPersistenceError):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=str(original),
             ) from exc
-        if isinstance(original, IdentifyEntitiesAgentError):
-            raise _map_identify_entities_error(str(original)) from exc
+        step_agent_errors = (
+            IdentifyEntitiesAgentError,
+            FilterUnmaintainedAgentError,
+            MergeDuplicatesAgentError,
+        )
+        if isinstance(original, step_agent_errors):
+            raise _map_step_agent_error(str(original)) from exc
         raise
 
     return _serialize_context(ctx)
