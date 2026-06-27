@@ -1,55 +1,42 @@
-"""Prompt loading helpers for the text summary agent."""
+"""text summary agent 的 prompt 加载辅助。
+
+实际加载逻辑统一在 ``agents._common.prompt_loader.PromptLoader`` 中实现；
+本模块只做"实例化 + 把方法导出为既有公开名"，保证对外契约（函数名、
+异常类）不变。
+"""
 
 from __future__ import annotations
 
-import hashlib
-import logging
-import os
-from functools import lru_cache
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
-_DEFAULT_PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "text_summary_agent.txt"
+from .._common import PromptLoader
+
+_DEFAULT_PROMPT_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "prompts" / "text_summary_agent.txt"
+)
+_ENV_VAR = "DOCUMENT_TEXT_SUMMARY_PROMPT_PATH"
 
 
 class TextSummaryPromptError(RuntimeError):
-    """Raised when the text summary prompt is unavailable."""
+    """text summary prompt 不可用时抛出。"""
+
+
+_loader = PromptLoader(
+    default_path=_DEFAULT_PROMPT_PATH,
+    env_var=_ENV_VAR,
+    error_cls=TextSummaryPromptError,
+    label="text summary",
+)
 
 
 def resolve_text_summary_prompt_path() -> Path:
-    configured_path = os.getenv("DOCUMENT_TEXT_SUMMARY_PROMPT_PATH")
-    if configured_path:
-        return Path(configured_path).expanduser().resolve()
-    return _DEFAULT_PROMPT_PATH
+    return _loader.resolve_path()
 
 
-@lru_cache(maxsize=1)
-def load_text_summary_prompt() -> str:
-    prompt_path = resolve_text_summary_prompt_path()
-    try:
-        prompt = prompt_path.read_text(encoding="utf-8").strip()
-    except FileNotFoundError as exc:
-        logger.warning("Text summary prompt file is missing path=%s", prompt_path)
-        raise TextSummaryPromptError(f"Prompt file not found: {prompt_path}") from exc
-    except OSError as exc:
-        logger.warning("Failed to read text summary prompt path=%s error=%s", prompt_path, exc)
-        raise TextSummaryPromptError(f"Failed to read prompt file: {prompt_path}") from exc
-
-    if not prompt:
-        logger.warning("Text summary prompt file is empty path=%s", prompt_path)
-        raise TextSummaryPromptError(f"Prompt file is empty: {prompt_path}")
-
-    logger.info("Loaded text summary prompt path=%s", prompt_path)
-    return prompt
+# 直接绑定 lru_cache 装饰的可调用对象，从而保留 ``.cache_clear()`` /
+# ``.cache_info()`` 接口，测试与既有代码完全无感。
+load_text_summary_prompt = _loader.cached_loader
 
 
 def get_text_summary_prompt_snapshot() -> tuple[str, str | None]:
-    prompt_path = resolve_text_summary_prompt_path()
-    try:
-        prompt = prompt_path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return str(prompt_path), None
-    if not prompt:
-        return str(prompt_path), None
-    return str(prompt_path), hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-
+    return _loader.snapshot()

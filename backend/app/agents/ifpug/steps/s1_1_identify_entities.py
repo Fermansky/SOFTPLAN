@@ -18,11 +18,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
-import os
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -37,6 +34,7 @@ from ....services import (
     get_llm_service_client,
     parse_object,
 )
+from ..._common import PromptLoader
 from ...pipeline import StepRecord, StepStatus
 from ..context import IfpugContext
 from ..domain import Attribute, DataEntity, SourceRef
@@ -73,45 +71,28 @@ class IdentifyEntitiesAgentError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# Prompt 加载（与既有 agent 一致：env 覆盖 + 缓存 + 哈希快照）
+# Prompt 加载（通过通用 PromptLoader 完成；保留旧的公开符号名作为门面）
 # ---------------------------------------------------------------------------
 
 
+_prompt_loader = PromptLoader(
+    default_path=_DEFAULT_PROMPT_PATH,
+    env_var=_PROMPT_ENV_VAR,
+    error_cls=IdentifyEntitiesPromptError,
+    label="ifpug s1_1",
+)
+
+
 def _resolve_prompt_path() -> Path:
-    configured_path = os.getenv(_PROMPT_ENV_VAR)
-    if configured_path:
-        return Path(configured_path).expanduser().resolve()
-    return _DEFAULT_PROMPT_PATH
+    return _prompt_loader.resolve_path()
 
 
-@lru_cache(maxsize=1)
-def load_identify_entities_prompt() -> str:
-    prompt_path = _resolve_prompt_path()
-    try:
-        prompt = prompt_path.read_text(encoding="utf-8").strip()
-    except FileNotFoundError as exc:
-        logger.warning("ifpug s1_1 prompt file is missing path=%s", prompt_path)
-        raise IdentifyEntitiesPromptError(f"Prompt file not found: {prompt_path}") from exc
-    except OSError as exc:
-        logger.warning("Failed to read ifpug s1_1 prompt path=%s error=%s", prompt_path, exc)
-        raise IdentifyEntitiesPromptError(f"Failed to read prompt file: {prompt_path}") from exc
-
-    if not prompt:
-        logger.warning("ifpug s1_1 prompt file is empty path=%s", prompt_path)
-        raise IdentifyEntitiesPromptError(f"Prompt file is empty: {prompt_path}")
-
-    return prompt
+# 直接绑定 lru_cache 装饰的可调用对象，保留 ``.cache_clear()`` 接口给测试。
+load_identify_entities_prompt = _prompt_loader.cached_loader
 
 
 def get_identify_entities_prompt_snapshot() -> tuple[str, str | None]:
-    prompt_path = _resolve_prompt_path()
-    try:
-        prompt = prompt_path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return str(prompt_path), None
-    if not prompt:
-        return str(prompt_path), None
-    return str(prompt_path), hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    return _prompt_loader.snapshot()
 
 
 # ---------------------------------------------------------------------------

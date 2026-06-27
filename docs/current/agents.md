@@ -4,6 +4,13 @@ Agent 位于 `backend/app/agents/`，每个 Agent 是一个独立子目录，包
 
 Agent 与 Service 的区别：Agent 直接调用 LLM 完成一个具体的智能任务，Service 负责业务编排。
 
+## 共享工具：`agents/_common/`
+
+跨 Agent 复用的纯函数工具集合（不强制基类，按需引用）：
+
+- `PromptLoader`：统一封装 prompt 文件的"env 覆盖路径 + lru_cache 加载 + sha256 快照 + 自定义错误类型"。每个 Agent 实例化一份并把 `cached_loader` / `snapshot` 等再导出为既有公开名（如 `load_text_summary_prompt`），对外契约不变。注意：每个实例持有**独立**的 lru_cache，避免不同 Agent 共用缓存导致 prompt 串位；`snapshot` 故意不走缓存，保证运维替换 prompt 文件后能立刻拿到新指纹。
+- 后续如新增多采样汇总 / 多次投票 / usage 累加等共享逻辑，应优先沉到此目录，仍以"纯函数 + 不可变 dataclass"为主，避免过早抽象基类。
+
 ---
 
 ## DocumentStructuringAgent
